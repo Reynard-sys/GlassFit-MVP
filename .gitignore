@@ -2,6 +2,10 @@
 
 # dependencies
 /node_modules
+fastapi-service/venv/
+fastapi-service/.venv/
+__pycache__/
+*.py[cod]
 /.pnp
 .pnp.*
 .yarn/*
@@ -29,9 +33,17 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+.logs/
 
 # env files (can opt-in for committing if needed)
 .env*
+
+# generated analysis artifacts
+fastapi-service/*.pt
+fastapi-service/generated/masks/*
+!fastapi-service/generated/masks/.gitkeep
+fastapi-service/generated/uploads/*
+!fastapi-service/generated/uploads/.gitkeep
 
 # vercel
 .vercel
