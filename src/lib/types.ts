@@ -144,6 +144,32 @@ export interface GroundingRealismSettings {
   cameraMatch: CameraMatchSettings;
 }
 
+export type PlacementType = "floor-standing" | "wall-mounted" | "tabletop";
+
+export interface AutoRealismSettings {
+  enabled: boolean;
+  placementType: PlacementType;
+  autoPerspective: boolean;
+  autoCameraMatch: boolean;
+  autoGroundingShadow: boolean;
+  autoEdgeBlend: boolean;
+  autoFaceShading: boolean;
+}
+
+export interface AutoRealismResult {
+  cameraBlurPx: number;
+  grainAmount: number;
+  edgeFeatherPx: number;
+  contactShadowStrength: number;
+  legShadowStrength: number;
+  shadowSoftness: number;
+  perspectiveSkewX: number;
+  perspectiveSkewY: number;
+  verticalTilt: number;
+  faceShadingStrength: number;
+  notes?: string[];
+}
+
 export interface DetectedObject {
   id: string;
   label: string;
@@ -224,6 +250,8 @@ export interface PlacedOverlay {
   spatialRelight?: SpatialRelightSettings;
   spatialRelightResult?: SpatialRelightResult;
   groundingRealism?: GroundingRealismSettings;
+  autoRealism?: AutoRealismSettings;
+  autoRealismResult?: AutoRealismResult;
   visible: boolean;
   windowGlass?: WindowGlassSettings;
   locked?: boolean;
@@ -244,6 +272,8 @@ export interface ActiveOverlayState {
   positionBasedAmbientEnabled?: boolean;
   spatialRelight?: SpatialRelightSettings;
   groundingRealism?: GroundingRealismSettings;
+  autoRealism?: AutoRealismSettings;
+  autoRealismResult?: AutoRealismResult;
   occlusionObjectIds: string[];
   windowGlass?: WindowGlassSettings;
 }
@@ -252,6 +282,7 @@ export interface FlattenedOverlayResult {
   dataUrl: string;
   localAmbient?: LocalAmbientState;
   spatialRelightResult?: SpatialRelightResult;
+  autoRealismResult?: AutoRealismResult;
 }
 
 export interface CanvasEditorHandle {

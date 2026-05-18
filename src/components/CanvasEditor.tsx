@@ -14,10 +14,13 @@ import {
 } from "react";
 import {
   analyzeLocalImageRegion,
+  applyBoxModelFaceShading,
   applyCameraMatchToOverlayCanvas,
   applySpatialRelightingToOverlayCanvas,
   buildSpatialLightingMap,
   computeOverlaySampleBounds,
+  DEFAULT_GROUNDING_REALISM,
+  deriveAutoRealismSettings,
   deriveLocalAmbientAdjustments,
   getAmbientCanvasFilter,
   loadCanvasImage,
@@ -26,6 +29,8 @@ import { ProductModelRenderer } from "@/lib/modelRenderer";
 import { getProductModelOption } from "@/lib/productModels";
 import type {
   ActiveOverlayState,
+  AutoRealismResult,
+  AutoRealismSettings,
   BrightnessCategory,
   CanvasBounds,
   CanvasEditorHandle,
@@ -190,6 +195,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             overlay.occlusionObjectIds,
             overlay.modelType,
             overlay.groundingRealism,
+            overlay.autoRealism,
+            overlay.autoRealismResult,
             overlay.windowGlass,
             background,
             objects,
@@ -225,6 +232,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               activeOverlay.occlusionObjectIds,
               activeOverlay.modelType,
               activeOverlay.groundingRealism,
+              activeOverlay.autoRealism,
+              undefined,
               activeOverlay.windowGlass,
               background,
               objects,
@@ -302,11 +311,21 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             lighting,
             onWarning,
           );
+          const autoRealismResult = getAutoRealismResult(
+            background,
+            modelCanvas,
+            activeOverlay,
+            localAmbient,
+            spatialRelightResult,
+            lighting,
+            onWarning,
+          );
 
           return {
             dataUrl: modelCanvas.toDataURL("image/png"),
             localAmbient,
             spatialRelightResult,
+            autoRealismResult,
           };
         },
       }),
@@ -631,6 +650,8 @@ function drawOverlayLayer(
   occlusionObjectIds: string[],
   modelType: PlacedOverlay["modelType"],
   groundingRealism: GroundingRealismSettings | undefined,
+  autoRealism: AutoRealismSettings | undefined,
+  autoRealismResult: AutoRealismResult | undefined,
   windowGlass: WindowGlassSettings | undefined,
   background: HTMLImageElement,
   objects: DetectedObject[],
@@ -645,10 +666,32 @@ function drawOverlayLayer(
   includeGuide: boolean,
 ) {
   const metrics = getOverlayMetrics(modelSource, canvasWidth, transform);
+  const overlayBounds = getOverlayBoundsFromMetrics(
+    transform,
+    metrics,
+    canvasWidth,
+    canvasHeight,
+  );
+  const effectiveAutoRealismResult = getEffectiveAutoRealismResult(
+    autoRealism,
+    autoRealismResult,
+    modelType,
+    overlayBounds,
+    canvasWidth,
+    canvasHeight,
+    lighting,
+    localAmbient,
+    spatialRelightResult,
+  );
+  const effectiveGroundingRealism = getEffectiveGroundingRealism(
+    groundingRealism,
+    autoRealism,
+    effectiveAutoRealismResult,
+  );
   const drawTransform = getGroundedOverlayTransform(
     transform,
     metrics,
-    groundingRealism,
+    effectiveGroundingRealism,
     canvasWidth,
     canvasHeight,
   );
@@ -664,7 +707,7 @@ function drawOverlayLayer(
     canvasHeight,
     shadowSettings,
     localAdjustments?.shadowOpacityMultiplier,
-    groundingRealism,
+    effectiveGroundingRealism,
     modelType,
   );
 
@@ -681,7 +724,9 @@ function drawOverlayLayer(
     spatialRelightResult,
     modelType,
     windowGlass,
-    groundingRealism,
+    effectiveGroundingRealism,
+    autoRealism,
+    effectiveAutoRealismResult,
   );
 
   const occludedSet = new Set(occlusionObjectIds);
@@ -702,7 +747,7 @@ function drawOverlayLayer(
       context,
       canvasWidth,
       canvasHeight,
-      groundingRealism,
+      effectiveGroundingRealism,
     );
   }
 }
@@ -721,16 +766,24 @@ function drawModelOverlay(
   modelType: PlacedOverlay["modelType"],
   windowGlass: WindowGlassSettings | undefined,
   groundingRealism: GroundingRealismSettings | undefined,
+  autoRealism: AutoRealismSettings | undefined,
+  autoRealismResult: AutoRealismResult | undefined,
 ) {
   const { sourceBounds, width, height } = metrics;
   const hasCameraMatch = Boolean(
     groundingRealism?.cameraMatch.enabled,
   );
+  const hasAutoFaceShading = Boolean(
+    autoRealism?.enabled &&
+      autoRealism.autoFaceShading &&
+      autoRealismResult,
+  );
   const needsPreparedCanvas = Boolean(
     lighting ||
       localAdjustments ||
       spatialRelightResult?.applied ||
-      hasCameraMatch,
+      hasCameraMatch ||
+      hasAutoFaceShading,
   );
   const source = needsPreparedCanvas
     ? createAmbientMatchedModelCanvas(
@@ -746,6 +799,8 @@ function drawModelOverlay(
         modelType,
         windowGlass,
         groundingRealism,
+        autoRealism,
+        autoRealismResult,
       )
     : modelSource;
   const localBlurFilter =
@@ -1133,6 +1188,58 @@ function getSpatialRelightResult(
   }
 }
 
+function getAutoRealismResult(
+  background: HTMLImageElement,
+  modelSource: OverlaySource,
+  activeOverlay: ActiveOverlayState,
+  localAmbient: LocalAmbientState,
+  spatialRelightResult: SpatialRelightResult | undefined,
+  globalLighting: LightingAnalysis | undefined,
+  onWarning: (message: string) => void,
+): AutoRealismResult | undefined {
+  const settings = activeOverlay.autoRealism;
+  if (!settings?.enabled) {
+    return undefined;
+  }
+
+  try {
+    const canvasWidth = background.naturalWidth || background.width;
+    const canvasHeight = background.naturalHeight || background.height;
+    const metrics = getOverlayMetrics(modelSource, canvasWidth, activeOverlay.transform);
+    const overlayBounds = getOverlayBoundsFromMetrics(
+      activeOverlay.transform,
+      metrics,
+      canvasWidth,
+      canvasHeight,
+    );
+    let localLighting = localAmbient.lighting;
+
+    if (!localLighting && overlayBounds) {
+      const imageData = getBackgroundImageData(background, overlayBounds);
+      localLighting = analyzeLocalImageRegion(imageData, overlayBounds);
+    }
+
+    return deriveAutoRealismSettings({
+      modelType: activeOverlay.modelType,
+      placementType: settings.placementType,
+      overlayBounds,
+      canvasWidth,
+      canvasHeight,
+      localLighting,
+      spatialLightingMap: spatialRelightResult?.lightingMap,
+      globalLighting,
+      imageSharpness: globalLighting?.sharpness,
+      imageNoise: localLighting?.noise ?? globalLighting?.noise,
+    });
+  } catch {
+    onWarning(
+      "Auto Realism could not sample this overlay, so the regular realism pipeline was used.",
+    );
+
+    return undefined;
+  }
+}
+
 function getPositionBasedAmbientState(
   background: HTMLImageElement,
   modelSource: OverlaySource,
@@ -1270,6 +1377,8 @@ function createAmbientMatchedModelCanvas(
   modelType: PlacedOverlay["modelType"],
   windowGlass: WindowGlassSettings | undefined,
   groundingRealism: GroundingRealismSettings | undefined,
+  autoRealism: AutoRealismSettings | undefined,
+  autoRealismResult: AutoRealismResult | undefined,
 ) {
   const workingCanvas = document.createElement("canvas");
   workingCanvas.width = Math.max(1, Math.round(width));
@@ -1375,12 +1484,14 @@ function createAmbientMatchedModelCanvas(
 
   workingContext.putImageData(imageData, 0, 0);
 
+  let processedCanvas: HTMLCanvasElement = workingCanvas;
+
   if (
     spatialRelight?.enabled &&
     spatialRelightResult?.applied &&
     spatialRelightResult.lightingMap
   ) {
-    const spatialCanvas = applySpatialRelightingToOverlayCanvas(
+    processedCanvas = applySpatialRelightingToOverlayCanvas(
       workingCanvas,
       spatialRelightResult.lightingMap,
       spatialRelight,
@@ -1388,17 +1499,22 @@ function createAmbientMatchedModelCanvas(
       modelType,
       windowGlass,
     );
+  }
 
-    return applyCameraMatchForOverlay(
-      spatialCanvas,
-      groundingRealism,
+  if (
+    autoRealism?.enabled &&
+    autoRealism.autoFaceShading &&
+    autoRealismResult
+  ) {
+    processedCanvas = applyBoxModelFaceShading(
+      processedCanvas,
       modelType,
-      windowGlass,
+      autoRealismResult.faceShadingStrength,
     );
   }
 
   return applyCameraMatchForOverlay(
-    workingCanvas,
+    processedCanvas,
     groundingRealism,
     modelType,
     windowGlass,
@@ -1429,6 +1545,100 @@ function applyCameraMatchForOverlay(
         }
       : cameraMatch,
     `${modelType}:${windowGlass?.mode ?? "none"}`,
+  );
+}
+
+function getEffectiveAutoRealismResult(
+  autoRealism: AutoRealismSettings | undefined,
+  autoRealismResult: AutoRealismResult | undefined,
+  modelType: PlacedOverlay["modelType"],
+  overlayBounds: CanvasBounds | null,
+  canvasWidth: number,
+  canvasHeight: number,
+  lighting: LightingAnalysis | undefined,
+  localAmbient: LocalAmbientState | undefined,
+  spatialRelightResult: SpatialRelightResult | undefined,
+) {
+  if (!autoRealism?.enabled) {
+    return undefined;
+  }
+
+  return (
+    autoRealismResult ??
+    deriveAutoRealismSettings({
+      modelType,
+      placementType: autoRealism.placementType,
+      overlayBounds,
+      canvasWidth,
+      canvasHeight,
+      localLighting: localAmbient?.lighting,
+      spatialLightingMap: spatialRelightResult?.lightingMap,
+      globalLighting: lighting,
+      imageSharpness: lighting?.sharpness,
+      imageNoise: localAmbient?.lighting?.noise ?? lighting?.noise,
+    })
+  );
+}
+
+function getEffectiveGroundingRealism(
+  groundingRealism: GroundingRealismSettings | undefined,
+  autoRealism: AutoRealismSettings | undefined,
+  autoRealismResult: AutoRealismResult | undefined,
+): GroundingRealismSettings | undefined {
+  const base = groundingRealism ?? DEFAULT_GROUNDING_REALISM;
+  if (!autoRealism?.enabled || !autoRealismResult) {
+    return groundingRealism;
+  }
+
+  return {
+    perspective: {
+      ...base.perspective,
+      enabled: autoRealism.autoPerspective,
+      skewX: autoRealismResult.perspectiveSkewX,
+      skewY: autoRealismResult.perspectiveSkewY,
+      verticalTilt: autoRealismResult.verticalTilt,
+      perspectiveX: autoRealismResult.perspectiveSkewX,
+      perspectiveY: autoRealismResult.verticalTilt,
+    },
+    floorAnchor: {
+      ...base.floorAnchor,
+      showGuide: base.floorAnchor.showGuide,
+    },
+    groundingShadow: {
+      ...base.groundingShadow,
+      enabled: autoRealism.autoGroundingShadow,
+      baseContactStrength: autoRealismResult.contactShadowStrength,
+      legContactStrength: autoRealismResult.legShadowStrength,
+      contactBlur: autoRealismResult.shadowSoftness,
+      floorFade: 0.82,
+      useFootPoints: autoRealism.placementType === "floor-standing",
+    },
+    cameraMatch: {
+      ...base.cameraMatch,
+      enabled: autoRealism.autoCameraMatch || autoRealism.autoEdgeBlend,
+      blurPx: autoRealism.autoCameraMatch ? autoRealismResult.cameraBlurPx : 0,
+      grainAmount: autoRealism.autoCameraMatch ? autoRealismResult.grainAmount : 0,
+      edgeFeatherPx: autoRealism.autoEdgeBlend ? autoRealismResult.edgeFeatherPx : 0,
+      compressionSoftness: autoRealism.autoCameraMatch
+        ? clampNumber(autoRealismResult.cameraBlurPx * 0.08, 0.04, 0.12)
+        : 0,
+    },
+  };
+}
+
+function getOverlayBoundsFromMetrics(
+  transform: OverlayTransform,
+  metrics: OverlayMetrics,
+  canvasWidth: number,
+  canvasHeight: number,
+): CanvasBounds | null {
+  return computeOverlaySampleBounds(
+    transform,
+    metrics.width,
+    metrics.height,
+    canvasWidth,
+    canvasHeight,
+    0,
   );
 }
 

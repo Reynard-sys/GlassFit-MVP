@@ -836,6 +836,50 @@ This is an image-based approximation. It improves realism when one side of the
 scene is brighter or darker than another, but it is not physically accurate
 global illumination or true scene relighting.
 
+### Auto Realism Engine
+
+The Auto Realism Engine is the customer-facing realism layer. It keeps the
+technical lighting, shadow, blur, grain, edge feathering, and perspective
+sliders out of the normal workflow and exposes only three practical controls:
+`Auto Realism`, `Auto-fit to Scene`, and `Placement Type`.
+
+Auto Realism derives camera quality matching, edge blending, grounding shadows,
+face shading, and simple perspective assistance from the uploaded image, overlay
+position, model type, placement type, and backend lighting analysis. Global
+ambient matching, position-based ambient matching, and spatial ambient
+relighting still remain part of the pipeline; Auto Realism runs on top of them
+rather than replacing them.
+
+When an overlay is applied, the canvas samples the local image region around the
+model, reuses the spatial relighting map when available, and stores an
+`autoRealismResult` with the derived blur, grain, edge feathering, contact
+shadow strength, leg shadow strength, shadow softness, perspective skew, and
+face-shading strength. Duplicated and edited overlays keep their Auto Realism
+settings but recompute the result when they are applied again.
+
+Placement type changes the defaults. Cabinets start as `Floor-standing`, with
+stronger base and foot shadows plus box-model face shading. Windows start as
+`Wall-mounted`, with weak or disabled floor grounding while preserving glass
+view modes. `Tabletop / Surface-mounted` uses moderate contact shadows directly
+under the product.
+
+`Auto-fit to Scene` applies a safe heuristic perspective adjustment. It uses the
+overlay position in the photo to add small skew and vertical tilt values, enough
+to avoid a perfectly flat front-facing look without attempting true floor-plane
+detection or camera calibration.
+
+Advanced tuning controls still exist in collapsed sections for debugging or
+developer adjustment. They include the older perspective, grounding, ambient,
+spatial relighting, and shadow sliders, but normal users do not need to open
+them.
+
+This feature improves visual realism but remains a practical approximation. It
+does not perform true depth estimation, automatic floor-plane detection, camera
+calibration, or physically accurate rendering. If auto sampling or canvas
+post-processing fails, the app falls back to the existing ambient, spatial
+relighting, shadow, and occlusion pipeline and still allows the overlay to be
+applied.
+
 ### Perspective and Grounding Realism Controls
 
 Ambient matching and spatial relighting improve how the overlay matches the

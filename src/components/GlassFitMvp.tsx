@@ -12,7 +12,9 @@ import {
   DEFAULT_GROUNDING_REALISM,
   DEFAULT_OVERLAY_TRANSFORM,
   DEFAULT_SPATIAL_RELIGHT_SETTINGS,
+  deriveAutoRealismSettings,
   deriveShadowSettingsFromLighting,
+  getDefaultAutoRealismSettings,
   getInitialOverlayTransform,
 } from "@/lib/canvasUtils";
 import { analyzeImage, getImageApiBaseUrl, validateImageFile } from "@/lib/imageApi";
@@ -24,6 +26,7 @@ import {
 } from "@/lib/productModels";
 import type {
   ActiveOverlayState,
+  AutoRealismSettings,
   CanvasEditorHandle,
   FlattenedOverlayResult,
   GroundingRealismSettings,
@@ -168,6 +171,7 @@ export function GlassFitMvp() {
       positionBasedAmbientEnabled: true,
       spatialRelight: cloneSpatialRelightSettings(DEFAULT_SPATIAL_RELIGHT_SETTINGS),
       groundingRealism: getDefaultGroundingRealism(modelType),
+      autoRealism: getDefaultAutoRealismSettings(modelType),
       occlusionObjectIds: [],
       windowGlass:
         modelType === "window" ? getDefaultWindowGlassSettings() : undefined,
@@ -218,6 +222,53 @@ export function GlassFitMvp() {
             shadowSettings: getDefaultShadowSettings(),
           }
         : current,
+    );
+  }
+
+  function handleAutoFitToScene() {
+    setActiveOverlay((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const autoRealism = getAutoRealismSettings(current, current.modelType);
+      const overlayBounds = getApproxOverlayBounds(current.transform, canvasSize);
+      const autoResult = deriveAutoRealismSettings({
+        modelType: current.modelType,
+        placementType: autoRealism.placementType,
+        overlayBounds,
+        canvasWidth: canvasSize?.width,
+        canvasHeight: canvasSize?.height,
+        globalLighting: analysis?.lighting,
+        imageSharpness: analysis?.lighting?.sharpness,
+        imageNoise: analysis?.lighting?.noise,
+      });
+      const groundingRealism = cloneGroundingRealismSettings(
+        getGroundingRealismSettings(current, current.modelType),
+      );
+
+      return {
+        ...current,
+        autoRealism: {
+          ...autoRealism,
+          autoPerspective: true,
+        },
+        groundingRealism: {
+          ...groundingRealism,
+          perspective: {
+            ...groundingRealism.perspective,
+            enabled: true,
+            skewX: autoResult.perspectiveSkewX,
+            skewY: autoResult.perspectiveSkewY,
+            verticalTilt: autoResult.verticalTilt,
+            perspectiveX: autoResult.perspectiveSkewX,
+            perspectiveY: autoResult.verticalTilt,
+          },
+        },
+      };
+    });
+    setWarning(
+      "Auto-fit applied. You can still move, resize, or rotate the overlay.",
     );
   }
 
@@ -338,6 +389,9 @@ export function GlassFitMvp() {
         groundingRealism: cloneGroundingRealismSettings(
           getGroundingRealismSettings(activeOverlay, activeOverlay.modelType),
         ),
+        autoRealism: cloneAutoRealismSettings(
+          getAutoRealismSettings(activeOverlay, activeOverlay.modelType),
+        ),
         occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
         windowGlass: getWindowGlassForModel(
           activeOverlay.modelType,
@@ -379,6 +433,9 @@ export function GlassFitMvp() {
       groundingRealism: cloneGroundingRealismSettings(
         getGroundingRealismSettings(overlay, overlay.modelType),
       ),
+      autoRealism: cloneAutoRealismSettings(
+        getAutoRealismSettings(overlay, overlay.modelType),
+      ),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
         getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
@@ -410,6 +467,9 @@ export function GlassFitMvp() {
       spatialRelight: cloneSpatialRelightSettings(getSpatialRelightSettings(overlay)),
       groundingRealism: cloneGroundingRealismSettings(
         getGroundingRealismSettings(overlay, overlay.modelType),
+      ),
+      autoRealism: cloneAutoRealismSettings(
+        getAutoRealismSettings(overlay, overlay.modelType),
       ),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
@@ -571,6 +631,7 @@ export function GlassFitMvp() {
               activeOverlay={activeOverlay}
               isGenerating={isGenerating}
               onApplyOverlay={handleApplyOverlay}
+              onAutoFitToScene={handleAutoFitToScene}
               onCancelOverlay={handleCancelOverlay}
               onDuplicateActiveOverlay={handleDuplicateActiveOverlay}
               onGenerate={handleGenerateOutput}
@@ -630,6 +691,10 @@ function createPlacedOverlayFromActive(
     groundingRealism: cloneGroundingRealismSettings(
       getGroundingRealismSettings(activeOverlay, activeOverlay.modelType),
     ),
+    autoRealism: cloneAutoRealismSettings(
+      getAutoRealismSettings(activeOverlay, activeOverlay.modelType),
+    ),
+    autoRealismResult: flattenedOverlay.autoRealismResult,
     windowGlass: getWindowGlassForModel(
       activeOverlay.modelType,
       activeOverlay.windowGlass,
@@ -672,6 +737,19 @@ function cloneSpatialRelightSettings(
   return { ...settings };
 }
 
+function getAutoRealismSettings(
+  overlay: { autoRealism?: AutoRealismSettings },
+  modelType: ProductModelType,
+) {
+  return overlay.autoRealism ?? getDefaultAutoRealismSettings(modelType);
+}
+
+function cloneAutoRealismSettings(
+  settings: AutoRealismSettings,
+): AutoRealismSettings {
+  return { ...settings };
+}
+
 function getGroundingRealismSettings(
   overlay: { groundingRealism?: GroundingRealismSettings },
   modelType: ProductModelType,
@@ -683,12 +761,32 @@ function getDefaultGroundingRealism(
   modelType: ProductModelType,
 ): GroundingRealismSettings {
   const defaults = cloneGroundingRealismSettings(DEFAULT_GROUNDING_REALISM);
+  const manualDefaults: GroundingRealismSettings = {
+    ...defaults,
+    perspective: {
+      ...defaults.perspective,
+      enabled: false,
+    },
+    floorAnchor: {
+      ...defaults.floorAnchor,
+      showGuide: false,
+      snapBottomToAnchor: false,
+    },
+    groundingShadow: {
+      ...defaults.groundingShadow,
+      enabled: false,
+    },
+    cameraMatch: {
+      ...defaults.cameraMatch,
+      enabled: false,
+    },
+  };
 
   if (modelType === "window") {
     return {
-      ...defaults,
+      ...manualDefaults,
       groundingShadow: {
-        ...defaults.groundingShadow,
+        ...manualDefaults.groundingShadow,
         baseContactStrength: 0.18,
         legContactStrength: 0.12,
         useFootPoints: false,
@@ -696,7 +794,7 @@ function getDefaultGroundingRealism(
     };
   }
 
-  return defaults;
+  return manualDefaults;
 }
 
 function cloneGroundingRealismSettings(
@@ -732,5 +830,24 @@ function offsetTransform(transform: OverlayTransform): OverlayTransform {
     ...transform,
     x: transform.x + 40,
     y: transform.y + 40,
+  };
+}
+
+function getApproxOverlayBounds(
+  transform: OverlayTransform,
+  canvasSize: CanvasSize | null,
+) {
+  if (!canvasSize) {
+    return null;
+  }
+
+  const width = canvasSize.width * transform.scale;
+  const height = width * 1.12;
+
+  return {
+    x: Math.round(Math.max(0, transform.x - width / 2)),
+    y: Math.round(Math.max(0, transform.y - height / 2)),
+    width: Math.round(Math.min(width, canvasSize.width)),
+    height: Math.round(Math.min(height, canvasSize.height)),
   };
 }

@@ -1,4 +1,6 @@
 import type {
+  AutoRealismResult,
+  AutoRealismSettings,
   BrightnessAnalysis,
   BrightnessCategory,
   CanvasBounds,
@@ -8,6 +10,7 @@ import type {
   LocalLightingAnalysis,
   LightingAnalysis,
   OverlayTransform,
+  PlacementType,
   ProductModelType,
   ShadowSettings,
   SpatialLightingMap,
@@ -95,6 +98,30 @@ export const DEFAULT_GROUNDING_REALISM: GroundingRealismSettings = {
     compressionSoftness: 0.08,
   },
 };
+
+export const DEFAULT_AUTO_REALISM_SETTINGS: AutoRealismSettings = {
+  enabled: true,
+  placementType: "floor-standing",
+  autoPerspective: true,
+  autoCameraMatch: true,
+  autoGroundingShadow: true,
+  autoEdgeBlend: true,
+  autoFaceShading: true,
+};
+
+export function getDefaultAutoRealismSettings(
+  modelType: ProductModelType,
+): AutoRealismSettings {
+  if (modelType === "window") {
+    return {
+      ...DEFAULT_AUTO_REALISM_SETTINGS,
+      placementType: "wall-mounted",
+      autoGroundingShadow: false,
+    };
+  }
+
+  return { ...DEFAULT_AUTO_REALISM_SETTINGS };
+}
 
 export function getAmbientCanvasFilter(
   category: BrightnessCategory | undefined,
@@ -311,6 +338,130 @@ export function deriveLocalAmbientAdjustments(
     blurPx: clamp((1 - localLighting.contrast) * 0.65, 0, 2),
     grain: clamp((localLighting.noise ?? 0) * 0.16, 0, 0.25),
     shadowOpacityMultiplier: clamp(1 + intensityDelta * 0.35 + contrastDelta * 0.08, 0.75, 1.3),
+  };
+}
+
+export function deriveAutoRealismSettings({
+  modelType,
+  placementType,
+  overlayBounds,
+  canvasWidth,
+  canvasHeight,
+  localLighting,
+  spatialLightingMap,
+  globalLighting,
+  imageSharpness,
+  imageNoise,
+}: {
+  modelType: ProductModelType;
+  placementType: PlacementType;
+  overlayBounds: CanvasBounds | null;
+  canvasWidth?: number;
+  canvasHeight?: number;
+  localLighting?: LocalLightingAnalysis;
+  spatialLightingMap?: SpatialLightingMap;
+  globalLighting?: LightingAnalysis;
+  imageSharpness?: number;
+  imageNoise?: number;
+}): AutoRealismResult {
+  const spatialContrast = spatialLightingMap
+    ? spatialLightingMap.cells.reduce((sum, cell) => sum + cell.contrast, 0) /
+      Math.max(spatialLightingMap.cells.length, 1)
+    : undefined;
+  const contrast =
+    localLighting?.contrast ??
+    spatialContrast ??
+    globalLighting?.contrast ??
+    1;
+  const noise =
+    imageNoise ??
+    localLighting?.noise ??
+    globalLighting?.noise ??
+    globalLighting?.suggested.grain ??
+    0.04;
+  const sharpness = imageSharpness ?? globalLighting?.sharpness ?? 120;
+  const suggestedBlur = globalLighting?.suggested.blur_px ?? 0.25;
+  const normalizedSharpness = clamp(sharpness / 180, 0, 1);
+  const softnessFromSharpness = 1 - normalizedSharpness;
+  const overlayCenterX = overlayBounds
+    ? overlayBounds.x + overlayBounds.width / 2
+    : (canvasWidth ?? 1) * 0.5;
+  const overlayBottom = overlayBounds
+    ? overlayBounds.y + overlayBounds.height
+    : (canvasHeight ?? 1) * 0.7;
+  const horizontalOffset = canvasWidth
+    ? clamp((overlayCenterX / canvasWidth - 0.5) * 2, -1, 1)
+    : 0;
+  const lowerImageFactor = canvasHeight
+    ? clamp((overlayBottom / canvasHeight - 0.42) / 0.46, 0, 1)
+    : 0.55;
+  const placementGrounding = getPlacementGroundingProfile(
+    placementType,
+    modelType,
+    lowerImageFactor,
+    contrast,
+  );
+  const perspectiveAmount =
+    placementType === "floor-standing"
+      ? 1
+      : placementType === "tabletop"
+        ? 0.62
+        : 0.35;
+  const perspectiveSkewX = clamp(
+    -horizontalOffset * 0.06 * perspectiveAmount,
+    -0.08,
+    0.08,
+  );
+  const perspectiveSkewY = clamp(
+    horizontalOffset * 0.025 * perspectiveAmount,
+    -0.04,
+    0.04,
+  );
+  const verticalTilt = clamp(
+    (lowerImageFactor - 0.38) * 0.085 * perspectiveAmount,
+    -0.05,
+    0.08,
+  );
+  const cameraBlurPx = clamp(
+    0.22 + suggestedBlur * 0.4 + softnessFromSharpness * 0.55 + (1 - contrast) * 0.18,
+    0.2,
+    1.2,
+  );
+  const grainAmount = clamp(
+    0.025 + noise * 0.18 + (globalLighting?.suggested.grain ?? 0) * 0.3,
+    0.02,
+    0.1,
+  );
+  const edgeFeatherPx = clamp(
+    0.42 + cameraBlurPx * 0.45 + noise * 0.25,
+    0.4,
+    1.4,
+  );
+  const faceShadingStrength =
+    modelType === "cabinet"
+      ? clamp(0.16 + lowerImageFactor * 0.08 + (contrast - 1) * 0.08, 0.12, 0.32)
+      : clamp(0.06 + (contrast - 1) * 0.04, 0.03, 0.12);
+  const notes: string[] = [];
+
+  if (!localLighting) {
+    notes.push("Used global image analysis because local lighting was unavailable.");
+  }
+  if (!overlayBounds) {
+    notes.push("Used safe overlay-position defaults for perspective.");
+  }
+
+  return {
+    cameraBlurPx,
+    grainAmount,
+    edgeFeatherPx,
+    contactShadowStrength: placementGrounding.contactShadowStrength,
+    legShadowStrength: placementGrounding.legShadowStrength,
+    shadowSoftness: placementGrounding.shadowSoftness,
+    perspectiveSkewX,
+    perspectiveSkewY,
+    verticalTilt,
+    faceShadingStrength,
+    notes: notes.length > 0 ? notes : undefined,
   };
 }
 
@@ -545,6 +696,72 @@ export function applySpatialRelightingToOverlayCanvas(
   return outputCanvas;
 }
 
+export function applyBoxModelFaceShading(
+  modelCanvas: HTMLCanvasElement,
+  modelType: ProductModelType,
+  strength: number,
+): HTMLCanvasElement {
+  if (modelType !== "cabinet" || strength <= 0.01) {
+    return modelCanvas;
+  }
+
+  const outputCanvas = document.createElement("canvas");
+  outputCanvas.width = modelCanvas.width;
+  outputCanvas.height = modelCanvas.height;
+
+  const outputContext = outputCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!outputContext) {
+    return modelCanvas;
+  }
+
+  outputContext.drawImage(modelCanvas, 0, 0);
+
+  const imageData = outputContext.getImageData(
+    0,
+    0,
+    outputCanvas.width,
+    outputCanvas.height,
+  );
+  const data = imageData.data;
+  const clampedStrength = clamp(strength, 0, 0.45);
+
+  for (let y = 0; y < outputCanvas.height; y += 1) {
+    const normalizedY = outputCanvas.height <= 1 ? 0.5 : y / (outputCanvas.height - 1);
+
+    for (let x = 0; x < outputCanvas.width; x += 1) {
+      const index = (y * outputCanvas.width + x) * 4;
+      const alpha = data[index + 3] / 255;
+      if (alpha <= 0.01) {
+        continue;
+      }
+
+      const normalizedX = outputCanvas.width <= 1 ? 0.5 : x / (outputCanvas.width - 1);
+      const sideDistance = Math.abs(normalizedX - 0.5) * 2;
+      const topLift = normalizedY < 0.2 ? (0.2 - normalizedY) / 0.2 : 0;
+      const lowerShade = normalizedY > 0.62 ? (normalizedY - 0.62) / 0.38 : 0;
+      const sideShade = Math.max(0, sideDistance - 0.72) / 0.28;
+      const undersideShade = normalizedY > 0.86 ? (normalizedY - 0.86) / 0.14 : 0;
+      const brightness =
+        1 +
+        topLift * clampedStrength * 0.18 -
+        lowerShade * clampedStrength * 0.18 -
+        sideShade * clampedStrength * 0.14 -
+        undersideShade * clampedStrength * 0.22;
+      const contrast = 1 + clampedStrength * 0.08;
+
+      data[index] = clampChannel((data[index] * brightness - 128) * contrast + 128);
+      data[index + 1] = clampChannel((data[index + 1] * brightness - 128) * contrast + 128);
+      data[index + 2] = clampChannel((data[index + 2] * brightness - 128) * contrast + 128);
+    }
+  }
+
+  outputContext.putImageData(imageData, 0, 0);
+
+  return outputCanvas;
+}
+
 export function applyCameraMatchToOverlayCanvas(
   modelCanvas: HTMLCanvasElement,
   settings: CameraMatchSettings,
@@ -705,6 +922,35 @@ function normalizeShadowDirection(value: number, fallback: number) {
   }
 
   return clamp(value, -1, 1);
+}
+
+function getPlacementGroundingProfile(
+  placementType: PlacementType,
+  modelType: ProductModelType,
+  lowerImageFactor: number,
+  contrast: number,
+) {
+  if (placementType === "wall-mounted") {
+    return {
+      contactShadowStrength: modelType === "window" ? 0.08 : 0.14,
+      legShadowStrength: modelType === "window" ? 0.04 : 0.08,
+      shadowSoftness: clamp(16 + (1 - contrast) * 5, 12, 22),
+    };
+  }
+
+  if (placementType === "tabletop") {
+    return {
+      contactShadowStrength: clamp(0.22 + lowerImageFactor * 0.12, 0.22, 0.4),
+      legShadowStrength: clamp(0.12 + lowerImageFactor * 0.1, 0.1, 0.32),
+      shadowSoftness: clamp(10 + (1 - contrast) * 5, 8, 18),
+    };
+  }
+
+  return {
+    contactShadowStrength: clamp(0.35 + lowerImageFactor * 0.16 + (contrast - 1) * 0.05, 0.35, 0.55),
+    legShadowStrength: clamp(0.45 + lowerImageFactor * 0.22 + (contrast - 1) * 0.08, 0.45, 0.7),
+    shadowSoftness: clamp(9 + (1 - contrast) * 6 + lowerImageFactor * 5, 8, 18),
+  };
 }
 
 function getRotatedOverlaySize(

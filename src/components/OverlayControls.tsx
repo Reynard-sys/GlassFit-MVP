@@ -6,12 +6,15 @@ import {
   clamp,
   DEFAULT_GROUNDING_REALISM,
   DEFAULT_SPATIAL_RELIGHT_SETTINGS,
+  getDefaultAutoRealismSettings,
 } from "@/lib/canvasUtils";
 import type {
   ActiveOverlayState,
+  AutoRealismSettings,
   GlassViewMode,
   GroundingRealismSettings,
   OverlayTransform,
+  PlacementType,
   ShadowSettings,
   SpatialRelightSettings,
   WindowGlassSettings,
@@ -21,6 +24,7 @@ interface OverlayControlsProps {
   activeOverlay: ActiveOverlayState | null;
   isGenerating: boolean;
   onApplyOverlay: () => void;
+  onAutoFitToScene: () => void;
   onCancelOverlay: () => void;
   onDuplicateActiveOverlay: () => void;
   onGenerate: () => void;
@@ -33,6 +37,7 @@ export function OverlayControls({
   activeOverlay,
   isGenerating,
   onApplyOverlay,
+  onAutoFitToScene,
   onCancelOverlay,
   onDuplicateActiveOverlay,
   onGenerate,
@@ -44,6 +49,10 @@ export function OverlayControls({
   const shadowSettings = activeOverlay?.shadowSettings;
   const groundingRealism = getGroundingRealismSettings(
     activeOverlay?.groundingRealism,
+  );
+  const autoRealism = getAutoRealismSettings(
+    activeOverlay?.autoRealism,
+    activeOverlay?.modelType,
   );
 
   function setTransform(
@@ -109,6 +118,20 @@ export function OverlayControls({
 
   function toggleSpatialRelight(enabled: boolean) {
     updateSpatialRelightSettings({ enabled });
+  }
+
+  function updateAutoRealismSettings(update: Partial<AutoRealismSettings>) {
+    setActiveOverlay((current) =>
+      current
+        ? {
+            ...current,
+            autoRealism: {
+              ...getAutoRealismSettings(current.autoRealism, current.modelType),
+              ...update,
+            },
+          }
+        : current,
+    );
   }
 
   function updateGroundingRealismSettings(
@@ -303,7 +326,58 @@ export function OverlayControls({
             />
           ) : null}
 
-          <ControlGroup defaultOpen={false} title="Perspective & Grounding">
+          <ControlGroup title="Realism">
+            <div className="space-y-4">
+              <label className="flex cursor-pointer items-start justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-800">
+                <span>
+                  <span className="block font-medium">Auto Realism</span>
+                  <span className="mt-1 block text-xs leading-5 text-stone-500">
+                    Automatically matches lighting, shadows, edges, and camera quality to the uploaded photo.
+                  </span>
+                </span>
+                <input
+                  checked={autoRealism.enabled}
+                  className="mt-1 h-5 w-5 shrink-0 accent-teal-600"
+                  onChange={(event) =>
+                    updateAutoRealismSettings({ enabled: event.target.checked })
+                  }
+                  type="checkbox"
+                />
+              </label>
+
+              <button
+                className="w-full rounded-md bg-teal-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-teal-800"
+                onClick={onAutoFitToScene}
+                type="button"
+              >
+                Auto-fit to Scene
+              </button>
+              <p className="rounded-md border border-stone-200 bg-white px-3 py-2 text-xs leading-5 text-stone-600">
+                Attempts to align the overlay with the photo&apos;s floor and perspective.
+              </p>
+
+              <label className="block">
+                <span className="text-sm font-medium text-stone-800">
+                  Placement Type
+                </span>
+                <select
+                  className="mt-2 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-800 outline-none transition focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
+                  onChange={(event) =>
+                    updateAutoRealismSettings({
+                      placementType: event.target.value as PlacementType,
+                    })
+                  }
+                  value={autoRealism.placementType}
+                >
+                  <option value="floor-standing">Floor-standing</option>
+                  <option value="wall-mounted">Wall-mounted</option>
+                  <option value="tabletop">Tabletop / Surface-mounted</option>
+                </select>
+              </label>
+            </div>
+          </ControlGroup>
+
+          <ControlGroup defaultOpen={false} title="Advanced tuning: Perspective & Grounding">
             <div className="space-y-4">
               <ShadowToggle
                 checked={groundingRealism.perspective.enabled}
@@ -515,7 +589,7 @@ export function OverlayControls({
             </div>
           </ControlGroup>
 
-          <ControlGroup title="Lighting & Shadows">
+          <ControlGroup defaultOpen={false} title="Advanced tuning: Lighting & Shadows">
             <div className="space-y-3">
               <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm font-medium text-stone-800">
                 <span>Apply Ambient Light Adjustment</span>
@@ -945,6 +1019,13 @@ function getSpatialRelightSettings(
   settings: SpatialRelightSettings | undefined,
 ): SpatialRelightSettings {
   return settings ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+}
+
+function getAutoRealismSettings(
+  settings: AutoRealismSettings | undefined,
+  modelType: ActiveOverlayState["modelType"] | undefined,
+): AutoRealismSettings {
+  return settings ?? getDefaultAutoRealismSettings(modelType ?? "cabinet");
 }
 
 function getGroundingRealismSettings(
