@@ -759,6 +759,44 @@ This makes the 3D model lighting respond to the uploaded photo.
 
 This makes the model texture and overall quality better match the photo.
 
+### Position-Based Ambient Matching
+
+Global matching happens after image upload and describes the overall photo.
+Position-based ambient matching happens later, when the user applies an
+overlay. The frontend samples only the background region around the overlay's
+current canvas position, including padding around the model bounds, then clamps
+that region to the uploaded image.
+
+The local sample estimates:
+
+- mean RGB and ambient color
+- local brightness
+- local contrast
+- local saturation
+- warm/cool cast
+- green/magenta tint
+- light noise
+
+The app derives conservative local adjustments for brightness, contrast,
+saturation, ambient color mix, subtle blur/grain, and a shadow opacity
+multiplier. These adjustments refine the existing global ambient match rather
+than replacing it. This improves realism when one part of a room is darker or
+brighter than another, while remaining an approximation rather than physically
+accurate relighting.
+
+The `Position-based ambient matching` toggle is enabled by default in the
+overlay controls. Editing or duplicating an overlay preserves the setting, but
+local lighting is recomputed when the overlay is applied again so moved or
+offset overlays match their new position. If local sampling fails because the
+background is unavailable, the sample area is invalid, or `getImageData` fails,
+the app still places the overlay using the existing global ambient matching.
+
+For window overlays using Outdoor View, the local pass is intentionally softer:
+color mixing is capped and brightness adjustment is limited so the outdoor
+texture remains visible. Object-aware occlusion remains unchanged because
+cutouts are drawn after the model, and shadow controls remain user-driven with
+only a subtle local opacity multiplier.
+
 ### Shadow System
 
 The canvas draws two shadow layers before drawing the model itself.

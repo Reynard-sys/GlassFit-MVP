@@ -76,6 +76,12 @@ export function OverlayControls({
     );
   }
 
+  function togglePositionBasedAmbient(enabled: boolean) {
+    setActiveOverlay((current) =>
+      current ? { ...current, positionBasedAmbientEnabled: enabled } : current,
+    );
+  }
+
   function updateWindowGlassSettings(update: Partial<WindowGlassSettings>) {
     setActiveOverlay((current) => {
       if (!current || current.modelType !== "window") {
@@ -212,6 +218,24 @@ export function OverlayControls({
                   checked={activeOverlay.ambientEnabled}
                   className="h-5 w-5 accent-teal-600"
                   onChange={(event) => toggleAmbientLight(event.target.checked)}
+                  type="checkbox"
+                />
+              </label>
+              <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-800">
+                <span>
+                  <span className="block font-medium">
+                    Position-based ambient matching
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-stone-500">
+                    Refines lighting from the exact area when the overlay is placed.
+                  </span>
+                </span>
+                <input
+                  checked={activeOverlay.positionBasedAmbientEnabled ?? true}
+                  className="h-5 w-5 shrink-0 accent-teal-600"
+                  onChange={(event) =>
+                    togglePositionBasedAmbient(event.target.checked)
+                  }
                   type="checkbox"
                 />
               </label>

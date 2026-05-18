@@ -23,6 +23,7 @@ import {
 import type {
   ActiveOverlayState,
   CanvasEditorHandle,
+  FlattenedOverlayResult,
   ImageAnalysisResponse,
   OverlayTransform,
   PlacedOverlay,
@@ -160,6 +161,7 @@ export function GlassFitMvp() {
       transform: getDefaultTransform(),
       shadowSettings: getDefaultShadowSettings(),
       ambientEnabled: true,
+      positionBasedAmbientEnabled: true,
       occlusionObjectIds: [],
       windowGlass:
         modelType === "window" ? getDefaultWindowGlassSettings() : undefined,
@@ -222,8 +224,8 @@ export function GlassFitMvp() {
     setError(null);
 
     try {
-      const flattenedImageDataUrl = await canvasRef.current?.flattenActiveOverlay();
-      if (!flattenedImageDataUrl) {
+      const flattenedOverlay = await canvasRef.current?.flattenActiveOverlay();
+      if (!flattenedOverlay) {
         throw new Error("Overlay render failed.");
       }
 
@@ -235,7 +237,7 @@ export function GlassFitMvp() {
         const updatedOverlay = createPlacedOverlayFromActive(
           activeOverlay,
           activeOverlay.overlayId,
-          flattenedImageDataUrl,
+          flattenedOverlay,
           now,
           existingOverlay,
         );
@@ -251,7 +253,7 @@ export function GlassFitMvp() {
         const placedOverlay = createPlacedOverlayFromActive(
           activeOverlay,
           overlayId,
-          flattenedImageDataUrl,
+          flattenedOverlay,
           now,
         );
 
@@ -287,8 +289,8 @@ export function GlassFitMvp() {
     setError(null);
 
     try {
-      const flattenedImageDataUrl = await canvasRef.current?.flattenActiveOverlay();
-      if (!flattenedImageDataUrl) {
+      const flattenedOverlay = await canvasRef.current?.flattenActiveOverlay();
+      if (!flattenedOverlay) {
         throw new Error("Overlay render failed.");
       }
 
@@ -300,7 +302,7 @@ export function GlassFitMvp() {
       const sourceOverlay = createPlacedOverlayFromActive(
         activeOverlay,
         sourceOverlayId,
-        flattenedImageDataUrl,
+        flattenedOverlay,
         now,
         existingOverlay,
       );
@@ -323,6 +325,7 @@ export function GlassFitMvp() {
         transform: offsetTransform(activeOverlay.transform),
         shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
         ambientEnabled: activeOverlay.ambientEnabled,
+        positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
         occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
         windowGlass: getWindowGlassForModel(
           activeOverlay.modelType,
@@ -359,6 +362,7 @@ export function GlassFitMvp() {
       transform: cloneTransform(overlay.transform),
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
       ambientEnabled: overlay.ambientEnabled,
+      positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
         getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
@@ -386,6 +390,7 @@ export function GlassFitMvp() {
       transform: offsetTransform(overlay.transform),
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
       ambientEnabled: overlay.ambientEnabled,
+      positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
         getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
@@ -583,7 +588,7 @@ export function GlassFitMvp() {
 function createPlacedOverlayFromActive(
   activeOverlay: ActiveOverlayState,
   overlayId: string,
-  flattenedImageDataUrl: string,
+  flattenedOverlay: FlattenedOverlayResult,
   timestamp: number,
   existingOverlay?: PlacedOverlay,
 ): PlacedOverlay {
@@ -596,13 +601,15 @@ function createPlacedOverlayFromActive(
     shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
     occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
     ambientEnabled: activeOverlay.ambientEnabled,
+    positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
+    localAmbient: flattenedOverlay.localAmbient,
     windowGlass: getWindowGlassForModel(
       activeOverlay.modelType,
       activeOverlay.windowGlass,
     ),
     visible: existingOverlay?.visible ?? true,
     locked: existingOverlay?.locked,
-    flattenedImageDataUrl,
+    flattenedImageDataUrl: flattenedOverlay.dataUrl,
     createdAt: existingOverlay?.createdAt ?? timestamp,
     updatedAt: timestamp,
   };
@@ -618,6 +625,12 @@ function cloneTransform(transform: OverlayTransform): OverlayTransform {
 
 function cloneShadowSettings(shadowSettings: ShadowSettings): ShadowSettings {
   return { ...shadowSettings };
+}
+
+function getPositionBasedAmbientEnabled(overlay: {
+  positionBasedAmbientEnabled?: boolean;
+}) {
+  return overlay.positionBasedAmbientEnabled ?? true;
 }
 
 function cloneWindowGlassSettings(

@@ -31,6 +31,43 @@ export interface LightingAnalysis {
   };
 }
 
+export interface CanvasBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface LocalLightingAnalysis {
+  meanRgb: [number, number, number];
+  ambientRgb: [number, number, number];
+  ambientHex: string;
+  meanIntensity: number;
+  contrast: number;
+  saturation: number;
+  warmth: number;
+  tint: number;
+  noise?: number;
+  sampleBounds: CanvasBounds;
+}
+
+export interface LocalAmbientAdjustments {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  colorMix: number;
+  color: [number, number, number];
+  blurPx: number;
+  grain: number;
+  shadowOpacityMultiplier: number;
+}
+
+export interface LocalAmbientState {
+  enabled: boolean;
+  lighting?: LocalLightingAnalysis;
+  adjustments?: LocalAmbientAdjustments;
+}
+
 export interface DetectedObject {
   id: string;
   label: string;
@@ -106,6 +143,8 @@ export interface PlacedOverlay {
   shadowSettings: ShadowSettings;
   occlusionObjectIds: string[];
   ambientEnabled: boolean;
+  positionBasedAmbientEnabled?: boolean;
+  localAmbient?: LocalAmbientState;
   visible: boolean;
   windowGlass?: WindowGlassSettings;
   locked?: boolean;
@@ -123,11 +162,17 @@ export interface ActiveOverlayState {
   transform: OverlayTransform;
   shadowSettings: ShadowSettings;
   ambientEnabled: boolean;
+  positionBasedAmbientEnabled?: boolean;
   occlusionObjectIds: string[];
   windowGlass?: WindowGlassSettings;
 }
 
+export interface FlattenedOverlayResult {
+  dataUrl: string;
+  localAmbient?: LocalAmbientState;
+}
+
 export interface CanvasEditorHandle {
   exportImage: () => Promise<string>;
-  flattenActiveOverlay: () => Promise<string>;
+  flattenActiveOverlay: () => Promise<FlattenedOverlayResult>;
 }

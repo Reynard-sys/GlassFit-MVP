@@ -13,6 +13,8 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  analyzeLocalImageRegion,
+  deriveLocalAmbientAdjustments,
   getAmbientCanvasFilter,
   loadCanvasImage,
 } from "@/lib/canvasUtils";
@@ -21,8 +23,11 @@ import { getProductModelOption } from "@/lib/productModels";
 import type {
   ActiveOverlayState,
   BrightnessCategory,
+  CanvasBounds,
   CanvasEditorHandle,
   DetectedObject,
+  LocalAmbientAdjustments,
+  LocalAmbientState,
   LightingAnalysis,
   OverlayTransform,
   PlacedOverlay,
@@ -184,6 +189,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             canvas.height,
             brightnessCategory,
             lighting,
+            overlay.localAmbient,
             false,
           );
         }
@@ -214,6 +220,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               canvas.height,
               brightnessCategory,
               lighting,
+              undefined,
               includeGuide,
             );
           }
@@ -251,6 +258,11 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             throw new Error("No active overlay to apply.");
           }
 
+          const background = backgroundRef.current;
+          if (!background) {
+            throw new Error("Background image is still loading.");
+          }
+
           const modelCanvas = modelRendererRef.current?.render(
             activeOverlay.transform,
             activeOverlay.ambientEnabled ? lighting : undefined,
@@ -261,10 +273,21 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             throw new Error("Active model is still loading.");
           }
 
-          return modelCanvas.toDataURL("image/png");
+          const localAmbient = getPositionBasedAmbientState(
+            background,
+            modelCanvas,
+            activeOverlay,
+            lighting,
+            onWarning,
+          );
+
+          return {
+            dataUrl: modelCanvas.toDataURL("image/png"),
+            localAmbient,
+          };
         },
       }),
-      [activeOverlay, drawCanvas, lighting],
+      [activeOverlay, drawCanvas, lighting, onWarning],
     );
 
     useEffect(() => {
@@ -591,9 +614,13 @@ function drawOverlayLayer(
   canvasHeight: number,
   brightnessCategory: BrightnessCategory | undefined,
   lighting: LightingAnalysis | undefined,
+  localAmbient: LocalAmbientState | undefined,
   includeGuide: boolean,
 ) {
   const metrics = getOverlayMetrics(modelSource, canvasWidth, transform);
+  const localAdjustments = ambientEnabled && localAmbient?.enabled
+    ? localAmbient.adjustments
+    : undefined;
 
   drawSceneShadows(
     context,
@@ -602,6 +629,7 @@ function drawOverlayLayer(
     metrics,
     canvasHeight,
     shadowSettings,
+    localAdjustments?.shadowOpacityMultiplier,
   );
 
   drawModelOverlay(
@@ -612,6 +640,7 @@ function drawOverlayLayer(
     getAmbientCanvasFilter(brightnessCategory, lighting, ambientEnabled),
     ambientEnabled ? lighting : undefined,
     getAmbientMatchStrength(windowGlass),
+    localAdjustments,
   );
 
   const occludedSet = new Set(occlusionObjectIds);
@@ -639,9 +668,10 @@ function drawModelOverlay(
   filter: string,
   lighting: LightingAnalysis | undefined,
   ambientMatchStrength: number,
+  localAdjustments: LocalAmbientAdjustments | undefined,
 ) {
   const { sourceBounds, width, height } = metrics;
-  const source = lighting
+  const source = lighting || localAdjustments
     ? createAmbientMatchedModelCanvas(
         modelSource,
         sourceBounds,
@@ -649,15 +679,23 @@ function drawModelOverlay(
         height,
         lighting,
         ambientMatchStrength,
+        localAdjustments,
       )
     : modelSource;
+  const localBlurFilter =
+    localAdjustments && localAdjustments.blurPx > 0.05
+      ? `blur(${localAdjustments.blurPx}px)`
+      : "";
+  const combinedFilter = [filter === "none" ? "" : filter, localBlurFilter]
+    .filter(Boolean)
+    .join(" ") || "none";
 
   context.save();
   context.translate(transform.x, transform.y);
   context.rotate((transform.rotation * Math.PI) / 180);
   context.globalAlpha = 1;
-  context.filter = filter;
-  if (lighting) {
+  context.filter = combinedFilter;
+  if (lighting || localAdjustments) {
     context.drawImage(source, -width / 2, -height / 2, width, height);
   } else {
     context.drawImage(
@@ -682,17 +720,32 @@ function drawSceneShadows(
   metrics: OverlayMetrics,
   canvasHeight: number,
   shadowSettings: ShadowSettings,
+  shadowOpacityMultiplier = 1,
 ) {
   if (!shadowSettings.enabled) {
     return;
   }
 
   if (shadowSettings.castEnabled) {
-    drawCastShadow(context, modelSource, transform, metrics, shadowSettings);
+    drawCastShadow(
+      context,
+      modelSource,
+      transform,
+      metrics,
+      shadowSettings,
+      shadowOpacityMultiplier,
+    );
   }
 
   if (shadowSettings.contactEnabled) {
-    drawContactShadow(context, transform, metrics, canvasHeight, shadowSettings);
+    drawContactShadow(
+      context,
+      transform,
+      metrics,
+      canvasHeight,
+      shadowSettings,
+      shadowOpacityMultiplier,
+    );
   }
 }
 
@@ -702,6 +755,7 @@ function drawContactShadow(
   metrics: OverlayMetrics,
   canvasHeight: number,
   shadowSettings: ShadowSettings,
+  shadowOpacityMultiplier: number,
 ) {
   const { width, height } = metrics;
   const overlayBottom = transform.y + height / 2;
@@ -711,7 +765,7 @@ function drawContactShadow(
   const contactY = height * 0.36;
   const blur = clampNumber(shadowSettings.blur * 0.72, 6, 30);
   const opacity = clampNumber(
-    shadowSettings.contactOpacity * floorFactor,
+    shadowSettings.contactOpacity * floorFactor * shadowOpacityMultiplier,
     0,
     0.58,
   );
@@ -746,6 +800,7 @@ function drawCastShadow(
   transform: OverlayTransform,
   metrics: OverlayMetrics,
   shadowSettings: ShadowSettings,
+  shadowOpacityMultiplier: number,
 ) {
   const { sourceBounds, width, height } = metrics;
   const silhouette = createModelSilhouetteCanvas(modelSource, sourceBounds);
@@ -757,7 +812,11 @@ function drawCastShadow(
   context.save();
   context.translate(transform.x, transform.y);
   context.rotate((transform.rotation * Math.PI) / 180);
-  context.globalAlpha = clampNumber(shadowSettings.opacity, 0, 0.7);
+  context.globalAlpha = clampNumber(
+    shadowSettings.opacity * shadowOpacityMultiplier,
+    0,
+    0.7,
+  );
   context.filter = blur > 0 ? `blur(${blur}px)` : "none";
   context.transform(1.08, 0, skewX, 0.56, offsetX, offsetY + height * 0.2);
   context.drawImage(silhouette, -width / 2, -height / 2, width, height);
@@ -786,13 +845,173 @@ function drawObjectCutout(
   context.drawImage(cutoutCanvas, 0, 0);
 }
 
+function getPositionBasedAmbientState(
+  background: HTMLImageElement,
+  modelSource: OverlaySource,
+  activeOverlay: ActiveOverlayState,
+  globalLighting: LightingAnalysis | undefined,
+  onWarning: (message: string) => void,
+): LocalAmbientState {
+  const enabled =
+    activeOverlay.positionBasedAmbientEnabled !== false &&
+    activeOverlay.ambientEnabled;
+
+  if (!enabled) {
+    return { enabled: false };
+  }
+
+  try {
+    const canvasWidth = background.naturalWidth || background.width;
+    const canvasHeight = background.naturalHeight || background.height;
+    const metrics = getOverlayMetrics(modelSource, canvasWidth, activeOverlay.transform);
+    const sampleBounds = getOverlaySampleBounds(
+      activeOverlay.transform,
+      metrics,
+      canvasWidth,
+      canvasHeight,
+    );
+
+    if (!sampleBounds) {
+      return { enabled: false };
+    }
+
+    const imageData = getBackgroundImageData(background, sampleBounds);
+    const lighting = analyzeLocalImageRegion(imageData, sampleBounds);
+    const adjustments = constrainLocalAdjustmentsForOverlay(
+      deriveLocalAmbientAdjustments(lighting, globalLighting),
+      activeOverlay,
+    );
+
+    return {
+      enabled: true,
+      lighting,
+      adjustments,
+    };
+  } catch {
+    onWarning(
+      "Position-based ambient matching could not sample this overlay, so global matching was used.",
+    );
+
+    return { enabled: false };
+  }
+}
+
+function getOverlaySampleBounds(
+  transform: OverlayTransform,
+  metrics: OverlayMetrics,
+  canvasWidth: number,
+  canvasHeight: number,
+): CanvasBounds | null {
+  if (canvasWidth <= 0 || canvasHeight <= 0) {
+    return null;
+  }
+
+  const rotatedSize = getRotatedOverlaySize(
+    metrics.width,
+    metrics.height,
+    transform.rotation,
+  );
+  const paddingX = rotatedSize.width * 0.15;
+  const paddingY = rotatedSize.height * 0.15;
+  const left = Math.floor(transform.x - rotatedSize.width / 2 - paddingX);
+  const top = Math.floor(transform.y - rotatedSize.height / 2 - paddingY);
+  const right = Math.ceil(transform.x + rotatedSize.width / 2 + paddingX);
+  const bottom = Math.ceil(transform.y + rotatedSize.height / 2 + paddingY);
+  const x = clampNumber(left, 0, canvasWidth - 1);
+  const y = clampNumber(top, 0, canvasHeight - 1);
+  const clampedRight = clampNumber(right, x + 1, canvasWidth);
+  const clampedBottom = clampNumber(bottom, y + 1, canvasHeight);
+  const width = Math.round(clampedRight - x);
+  const height = Math.round(clampedBottom - y);
+
+  if (width < 8 || height < 8) {
+    return null;
+  }
+
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width,
+    height,
+  };
+}
+
+function getRotatedOverlaySize(
+  width: number,
+  height: number,
+  rotation: number,
+) {
+  const radians = Math.abs((rotation * Math.PI) / 180);
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+
+  return {
+    width: width * cos + height * sin,
+    height: width * sin + height * cos,
+  };
+}
+
+function getBackgroundImageData(
+  background: HTMLImageElement,
+  bounds: CanvasBounds,
+) {
+  const maxSamplePixels = 250000;
+  const downscale = Math.min(
+    1,
+    Math.sqrt(maxSamplePixels / Math.max(1, bounds.width * bounds.height)),
+  );
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = Math.max(1, Math.round(bounds.width * downscale));
+  sampleCanvas.height = Math.max(1, Math.round(bounds.height * downscale));
+
+  const sampleContext = sampleCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!sampleContext) {
+    throw new Error("Unable to create local lighting sample canvas.");
+  }
+
+  sampleContext.drawImage(
+    background,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    0,
+    0,
+    sampleCanvas.width,
+    sampleCanvas.height,
+  );
+
+  return sampleContext.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
+}
+
+function constrainLocalAdjustmentsForOverlay(
+  adjustments: LocalAmbientAdjustments,
+  activeOverlay: ActiveOverlayState,
+): LocalAmbientAdjustments {
+  if (
+    activeOverlay.modelType !== "window" ||
+    activeOverlay.windowGlass?.mode !== "outdoor"
+  ) {
+    return adjustments;
+  }
+
+  return {
+    ...adjustments,
+    brightness: clampNumber(adjustments.brightness, 0.85, 1.15),
+    colorMix: Math.min(adjustments.colorMix, 0.12),
+  };
+}
+
 function createAmbientMatchedModelCanvas(
   modelSource: OverlaySource,
   sourceBounds: SourceBounds,
   width: number,
   height: number,
-  lighting: LightingAnalysis,
+  lighting: LightingAnalysis | undefined,
   ambientMatchStrength: number,
+  localAdjustments: LocalAmbientAdjustments | undefined,
 ) {
   const workingCanvas = document.createElement("canvas");
   workingCanvas.width = Math.max(1, Math.round(width));
@@ -824,13 +1043,21 @@ function createAmbientMatchedModelCanvas(
     workingCanvas.height,
   );
   const data = imageData.data;
-  const ambient = lighting.ambient_rgb;
-  const ambientAverage = (ambient[0] + ambient[1] + ambient[2]) / 3 || 128;
-  const colorMix = lighting.suggested.color_mix * ambientMatchStrength;
-  const grainStrength = lighting.suggested.grain * 28 * ambientMatchStrength;
-  const contrast = lighting.suggested.contrast;
-  const saturation = lighting.suggested.saturation;
-  const brightness = 1 + (lighting.suggested.brightness - 1) * ambientMatchStrength;
+  const ambient = lighting?.ambient_rgb;
+  const ambientAverage = ambient
+    ? (ambient[0] + ambient[1] + ambient[2]) / 3 || 128
+    : 128;
+  const colorMix = (lighting?.suggested.color_mix ?? 0) * ambientMatchStrength;
+  const grainStrength = (lighting?.suggested.grain ?? 0) * 28 * ambientMatchStrength;
+  const contrast = lighting?.suggested.contrast ?? 1;
+  const saturation = lighting?.suggested.saturation ?? 1;
+  const brightness = lighting
+    ? 1 + (lighting.suggested.brightness - 1) * ambientMatchStrength
+    : 1;
+  const localAmbientAverage = localAdjustments
+    ? averageRgb(localAdjustments.color) || 128
+    : 128;
+  const localGrainStrength = (localAdjustments?.grain ?? 0) * 22;
 
   for (let index = 0; index < data.length; index += 4) {
     const alpha = data[index + 3] / 255;
@@ -851,11 +1078,38 @@ function createAmbientMatchedModelCanvas(
     green = (green - 128) * contrast + 128;
     blue = (blue - 128) * contrast + 128;
 
-    red = red * (1 - colorMix) + red * (ambient[0] / ambientAverage) * colorMix;
-    green = green * (1 - colorMix) + green * (ambient[1] / ambientAverage) * colorMix;
-    blue = blue * (1 - colorMix) + blue * (ambient[2] / ambientAverage) * colorMix;
+    if (ambient) {
+      red = red * (1 - colorMix) + red * (ambient[0] / ambientAverage) * colorMix;
+      green = green * (1 - colorMix) + green * (ambient[1] / ambientAverage) * colorMix;
+      blue = blue * (1 - colorMix) + blue * (ambient[2] / ambientAverage) * colorMix;
+    }
 
-    const grain = (pseudoRandom(index) - 0.5) * grainStrength;
+    if (localAdjustments) {
+      red *= localAdjustments.brightness;
+      green *= localAdjustments.brightness;
+      blue *= localAdjustments.brightness;
+
+      const localLuma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+      red = localLuma + (red - localLuma) * localAdjustments.saturation;
+      green = localLuma + (green - localLuma) * localAdjustments.saturation;
+      blue = localLuma + (blue - localLuma) * localAdjustments.saturation;
+
+      red = (red - 128) * localAdjustments.contrast + 128;
+      green = (green - 128) * localAdjustments.contrast + 128;
+      blue = (blue - 128) * localAdjustments.contrast + 128;
+
+      red =
+        red * (1 - localAdjustments.colorMix) +
+        red * (localAdjustments.color[0] / localAmbientAverage) * localAdjustments.colorMix;
+      green =
+        green * (1 - localAdjustments.colorMix) +
+        green * (localAdjustments.color[1] / localAmbientAverage) * localAdjustments.colorMix;
+      blue =
+        blue * (1 - localAdjustments.colorMix) +
+        blue * (localAdjustments.color[2] / localAmbientAverage) * localAdjustments.colorMix;
+    }
+
+    const grain = (pseudoRandom(index) - 0.5) * (grainStrength + localGrainStrength);
     data[index] = clampChannel(red + grain);
     data[index + 1] = clampChannel(green + grain);
     data[index + 2] = clampChannel(blue + grain);
@@ -1215,6 +1469,10 @@ function clampChannel(value: number) {
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function averageRgb(rgb: [number, number, number]) {
+  return (rgb[0] + rgb[1] + rgb[2]) / 3;
 }
 
 function pseudoRandom(seed: number) {
