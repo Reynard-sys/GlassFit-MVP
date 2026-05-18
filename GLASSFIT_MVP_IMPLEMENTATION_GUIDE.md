@@ -797,6 +797,90 @@ texture remains visible. Object-aware occlusion remains unchanged because
 cutouts are drawn after the model, and shadow controls remain user-driven with
 only a subtle local opacity multiplier.
 
+### Spatial Ambient Relighting
+
+Spatial ambient relighting is the non-uniform follow-up to the position-based
+ambient pass. Global ambient matching estimates the overall image lighting, but
+spatial relighting runs when an overlay is applied and builds a small 5x5
+lighting map from the local image region around the overlay.
+
+Each grid cell estimates:
+
+- mean RGB
+- mean luminance
+- contrast
+- saturation
+
+When the placed overlay is drawn, the renderer samples that map at each visible
+model pixel with bilinear interpolation. Pixels on the model that correspond to
+brighter background cells are subtly brightened, while pixels near darker cells
+are subtly darkened. A small local color influence is mixed in without
+overwriting the product material identity. The backend light direction is also
+used as a soft directional gradient across the model, so the light-facing side
+can read slightly brighter.
+
+The `Spatial ambient relighting` toggle is enabled by default and includes a
+simple strength slider. The map is generated only on Apply Overlay, not while
+dragging, so the live preview remains responsive. Duplicated and edited
+overlays keep their relighting settings but recompute the lighting map when
+they are applied in the new position.
+
+Window overlays keep their glass behavior. Outdoor View reduces color influence
+and clamps brightness more tightly so the outdoor scene stays visible. Shadows
+and object-aware occlusion keep the same layer order: shadows first, relit
+model next, then original-image cutouts above the model. If sampling or
+`getImageData` fails, the overlay still applies with the existing global and
+position-based ambient matching.
+
+This is an image-based approximation. It improves realism when one side of the
+scene is brighter or darker than another, but it is not physically accurate
+global illumination or true scene relighting.
+
+### Perspective and Grounding Realism Controls
+
+Ambient matching and spatial relighting improve how the overlay matches the
+photo lighting, but they do not solve camera perspective, floor contact, overly
+sharp render edges, or model footprint grounding. The `Perspective & Grounding`
+controls add a practical manual realism pass on top of the existing lighting
+pipeline.
+
+Perspective adjustment is enabled by default and uses an affine canvas
+approximation after the 3D model has been rendered to a transparent overlay
+canvas. The user can adjust skew X/Y, vertical tilt, floor angle, and simple
+perspective X/Y values so a cabinet or window can better follow the room
+perspective without requiring true camera calibration.
+
+Floor anchoring gives each overlay a normalized anchor point on the uploaded
+photo. The editor can show a subtle floor guide and, when `Snap bottom to floor
+anchor` is enabled, align the transformed overlay bottom center to that anchor.
+The guide is editor-only and is never included in the flattened overlay or final
+PNG export.
+
+Enhanced grounding shadows complement the existing directional cast shadow and
+generic contact shadow. The canvas now draws a soft base contact shadow plus
+smaller darker foot or leg ellipses before drawing the model. Cabinet overlays
+use stronger foot shadows by default, while window overlays start with weaker
+grounding so wall-mounted placements do not look like they are sitting on the
+floor.
+
+Camera matching runs on the prepared model canvas after global ambient matching,
+position-based matching, and spatial ambient relighting. It applies subtle
+softness, deterministic grain, compression-style smoothing, and alpha edge
+feathering while preserving transparency. This helps the rendered model avoid
+the too-clean digital edge that can stand out against phone photos.
+
+Placed overlays remain flattened visual layers. Duplicating an overlay copies
+the grounding realism settings into an independent duplicate, and editing a
+placed overlay restores those settings into the active overlay. Object-aware
+cutouts still draw above the transformed model, and window glass modes continue
+to run before camera matching and edge blending.
+
+This feature is intentionally manual and MVP-friendly. It is not automatic
+floor-plane detection, depth estimation, true perspective warp, physical
+relighting, or camera calibration. If canvas sampling, filtering, or image-data
+processing fails, the app falls back to the existing render path and still
+allows the overlay to be applied.
+
 ### Shadow System
 
 The canvas draws two shadow layers before drawing the model itself.

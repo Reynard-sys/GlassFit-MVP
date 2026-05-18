@@ -14,6 +14,10 @@ import {
 } from "react";
 import {
   analyzeLocalImageRegion,
+  applyCameraMatchToOverlayCanvas,
+  applySpatialRelightingToOverlayCanvas,
+  buildSpatialLightingMap,
+  computeOverlaySampleBounds,
   deriveLocalAmbientAdjustments,
   getAmbientCanvasFilter,
   loadCanvasImage,
@@ -31,7 +35,10 @@ import type {
   LightingAnalysis,
   OverlayTransform,
   PlacedOverlay,
+  GroundingRealismSettings,
   ShadowSettings,
+  SpatialRelightResult,
+  SpatialRelightSettings,
   WindowGlassSettings,
 } from "@/lib/types";
 
@@ -181,6 +188,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             overlay.shadowSettings,
             overlay.ambientEnabled,
             overlay.occlusionObjectIds,
+            overlay.modelType,
+            overlay.groundingRealism,
             overlay.windowGlass,
             background,
             objects,
@@ -190,6 +199,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             brightnessCategory,
             lighting,
             overlay.localAmbient,
+            overlay.spatialRelight,
+            overlay.spatialRelightResult,
             false,
           );
         }
@@ -212,6 +223,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               activeOverlay.shadowSettings,
               activeOverlay.ambientEnabled,
               activeOverlay.occlusionObjectIds,
+              activeOverlay.modelType,
+              activeOverlay.groundingRealism,
               activeOverlay.windowGlass,
               background,
               objects,
@@ -220,6 +233,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               canvas.height,
               brightnessCategory,
               lighting,
+              undefined,
+              activeOverlay.spatialRelight,
               undefined,
               includeGuide,
             );
@@ -280,10 +295,18 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             lighting,
             onWarning,
           );
+          const spatialRelightResult = getSpatialRelightResult(
+            background,
+            modelCanvas,
+            activeOverlay,
+            lighting,
+            onWarning,
+          );
 
           return {
             dataUrl: modelCanvas.toDataURL("image/png"),
             localAmbient,
+            spatialRelightResult,
           };
         },
       }),
@@ -606,6 +629,8 @@ function drawOverlayLayer(
   shadowSettings: ShadowSettings,
   ambientEnabled: boolean,
   occlusionObjectIds: string[],
+  modelType: PlacedOverlay["modelType"],
+  groundingRealism: GroundingRealismSettings | undefined,
   windowGlass: WindowGlassSettings | undefined,
   background: HTMLImageElement,
   objects: DetectedObject[],
@@ -615,9 +640,18 @@ function drawOverlayLayer(
   brightnessCategory: BrightnessCategory | undefined,
   lighting: LightingAnalysis | undefined,
   localAmbient: LocalAmbientState | undefined,
+  spatialRelight: SpatialRelightSettings | undefined,
+  spatialRelightResult: SpatialRelightResult | undefined,
   includeGuide: boolean,
 ) {
   const metrics = getOverlayMetrics(modelSource, canvasWidth, transform);
+  const drawTransform = getGroundedOverlayTransform(
+    transform,
+    metrics,
+    groundingRealism,
+    canvasWidth,
+    canvasHeight,
+  );
   const localAdjustments = ambientEnabled && localAmbient?.enabled
     ? localAmbient.adjustments
     : undefined;
@@ -625,22 +659,29 @@ function drawOverlayLayer(
   drawSceneShadows(
     context,
     modelSource,
-    transform,
+    drawTransform,
     metrics,
     canvasHeight,
     shadowSettings,
     localAdjustments?.shadowOpacityMultiplier,
+    groundingRealism,
+    modelType,
   );
 
   drawModelOverlay(
     context,
     modelSource,
-    transform,
+    drawTransform,
     metrics,
     getAmbientCanvasFilter(brightnessCategory, lighting, ambientEnabled),
     ambientEnabled ? lighting : undefined,
     getAmbientMatchStrength(windowGlass),
     localAdjustments,
+    ambientEnabled ? spatialRelight : undefined,
+    spatialRelightResult,
+    modelType,
+    windowGlass,
+    groundingRealism,
   );
 
   const occludedSet = new Set(occlusionObjectIds);
@@ -656,7 +697,13 @@ function drawOverlayLayer(
   }
 
   if (includeGuide) {
-    drawOverlayGuide(context, modelSource, transform, metrics);
+    drawOverlayGuide(context, modelSource, drawTransform, metrics);
+    drawFloorAnchorGuide(
+      context,
+      canvasWidth,
+      canvasHeight,
+      groundingRealism,
+    );
   }
 }
 
@@ -669,9 +716,23 @@ function drawModelOverlay(
   lighting: LightingAnalysis | undefined,
   ambientMatchStrength: number,
   localAdjustments: LocalAmbientAdjustments | undefined,
+  spatialRelight: SpatialRelightSettings | undefined,
+  spatialRelightResult: SpatialRelightResult | undefined,
+  modelType: PlacedOverlay["modelType"],
+  windowGlass: WindowGlassSettings | undefined,
+  groundingRealism: GroundingRealismSettings | undefined,
 ) {
   const { sourceBounds, width, height } = metrics;
-  const source = lighting || localAdjustments
+  const hasCameraMatch = Boolean(
+    groundingRealism?.cameraMatch.enabled,
+  );
+  const needsPreparedCanvas = Boolean(
+    lighting ||
+      localAdjustments ||
+      spatialRelightResult?.applied ||
+      hasCameraMatch,
+  );
+  const source = needsPreparedCanvas
     ? createAmbientMatchedModelCanvas(
         modelSource,
         sourceBounds,
@@ -680,6 +741,11 @@ function drawModelOverlay(
         lighting,
         ambientMatchStrength,
         localAdjustments,
+        spatialRelight,
+        spatialRelightResult,
+        modelType,
+        windowGlass,
+        groundingRealism,
       )
     : modelSource;
   const localBlurFilter =
@@ -691,26 +757,92 @@ function drawModelOverlay(
     .join(" ") || "none";
 
   context.save();
-  context.translate(transform.x, transform.y);
-  context.rotate((transform.rotation * Math.PI) / 180);
   context.globalAlpha = 1;
   context.filter = combinedFilter;
-  if (lighting || localAdjustments) {
-    context.drawImage(source, -width / 2, -height / 2, width, height);
-  } else {
-    context.drawImage(
+  if (needsPreparedCanvas) {
+    drawImageWithAffinePerspectiveApproximation(
+      context,
       source,
-      sourceBounds.x,
-      sourceBounds.y,
-      sourceBounds.width,
-      sourceBounds.height,
-      -width / 2,
-      -height / 2,
+      transform,
+      width,
+      height,
+      groundingRealism,
+    );
+  } else {
+    const sourceCanvas = createSourceCanvas(
+      source,
+      sourceBounds,
       width,
       height,
     );
+    drawImageWithAffinePerspectiveApproximation(
+      context,
+      sourceCanvas,
+      transform,
+      width,
+      height,
+      groundingRealism,
+    );
   }
   context.restore();
+}
+
+function createSourceCanvas(
+  modelSource: OverlaySource,
+  sourceBounds: SourceBounds,
+  width: number,
+  height: number,
+) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return modelSource;
+  }
+
+  context.drawImage(
+    modelSource,
+    sourceBounds.x,
+    sourceBounds.y,
+    sourceBounds.width,
+    sourceBounds.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
+
+  return canvas;
+}
+
+function drawImageWithAffinePerspectiveApproximation(
+  context: CanvasRenderingContext2D,
+  image: OverlaySource,
+  transform: OverlayTransform,
+  width: number,
+  height: number,
+  groundingRealism: GroundingRealismSettings | undefined,
+) {
+  const perspective = groundingRealism?.perspective;
+  const skewX = perspective?.enabled
+    ? perspective.skewX + perspective.perspectiveX * 0.2
+    : 0;
+  const skewY = perspective?.enabled
+    ? perspective.skewY + perspective.perspectiveY * 0.12 + perspective.verticalTilt * 0.16
+    : 0;
+  const scaleX = perspective?.enabled
+    ? clampNumber(1 + perspective.perspectiveX * 0.08, 0.92, 1.08)
+    : 1;
+  const scaleY = perspective?.enabled
+    ? clampNumber(1 - perspective.verticalTilt * 0.45, 0.78, 1.22)
+    : 1;
+
+  context.translate(transform.x, transform.y);
+  context.rotate((transform.rotation * Math.PI) / 180);
+  context.transform(scaleX, skewY, skewX, scaleY, 0, 0);
+  context.drawImage(image, -width / 2, -height / 2, width, height);
 }
 
 function drawSceneShadows(
@@ -721,6 +853,8 @@ function drawSceneShadows(
   canvasHeight: number,
   shadowSettings: ShadowSettings,
   shadowOpacityMultiplier = 1,
+  groundingRealism: GroundingRealismSettings | undefined,
+  modelType: PlacedOverlay["modelType"],
 ) {
   if (!shadowSettings.enabled) {
     return;
@@ -736,6 +870,15 @@ function drawSceneShadows(
       shadowOpacityMultiplier,
     );
   }
+
+  drawGroundingContactShadows(
+    context,
+    transform,
+    metrics,
+    groundingRealism,
+    modelType,
+    shadowOpacityMultiplier,
+  );
 
   if (shadowSettings.contactEnabled) {
     drawContactShadow(
@@ -794,6 +937,98 @@ function drawContactShadow(
   context.restore();
 }
 
+function drawGroundingContactShadows(
+  context: CanvasRenderingContext2D,
+  transform: OverlayTransform,
+  metrics: OverlayMetrics,
+  groundingRealism: GroundingRealismSettings | undefined,
+  modelType: PlacedOverlay["modelType"],
+  shadowOpacityMultiplier: number,
+) {
+  const grounding = groundingRealism?.groundingShadow;
+  if (!grounding?.enabled) {
+    return;
+  }
+
+  const perspective = groundingRealism?.perspective;
+  const { width, height } = metrics;
+  const modelFactor = modelType === "window" ? 0.45 : 1;
+  const baseOpacity = clampNumber(
+    grounding.baseContactStrength * grounding.floorFade * modelFactor * shadowOpacityMultiplier,
+    0,
+    0.62,
+  );
+  const footOpacity = clampNumber(
+    grounding.legContactStrength * modelFactor * shadowOpacityMultiplier,
+    0,
+    0.72,
+  );
+  const floorRotation =
+    ((transform.rotation + (perspective?.enabled ? perspective.floorAngle : 0)) * Math.PI) / 180;
+
+  context.save();
+  context.translate(transform.x, transform.y);
+  context.rotate(floorRotation);
+  context.filter = `blur(${clampNumber(grounding.contactBlur, 0, 32)}px)`;
+  context.globalAlpha = baseOpacity;
+  context.fillStyle = "rgba(18, 16, 14, 0.9)";
+  context.beginPath();
+  context.ellipse(
+    0,
+    height * 0.43,
+    width * 0.34,
+    height * 0.055,
+    0,
+    0,
+    Math.PI * 2,
+  );
+  context.fill();
+  context.restore();
+
+  if (!grounding.useFootPoints || footOpacity <= 0.01) {
+    return;
+  }
+
+  const footPoints =
+    modelType === "window"
+      ? [
+          { x: 0.28, y: 0.94, rx: 0.08, ry: 0.02 },
+          { x: 0.72, y: 0.94, rx: 0.08, ry: 0.02 },
+        ]
+      : [
+          { x: 0.18, y: 0.94, rx: 0.07, ry: 0.022 },
+          { x: 0.82, y: 0.94, rx: 0.07, ry: 0.022 },
+          { x: 0.25, y: 0.88, rx: 0.055, ry: 0.018 },
+          { x: 0.75, y: 0.88, rx: 0.055, ry: 0.018 },
+        ];
+
+  context.save();
+  context.translate(transform.x, transform.y);
+  context.rotate(floorRotation);
+  context.filter = `blur(${clampNumber(grounding.contactBlur * 0.55, 2, 18)}px)`;
+  context.globalAlpha = footOpacity;
+  context.fillStyle = "rgba(12, 10, 9, 0.95)";
+
+  for (const foot of footPoints) {
+    const x = -width / 2 + width * foot.x;
+    const y = -height / 2 + height * foot.y;
+
+    context.beginPath();
+    context.ellipse(
+      x,
+      y,
+      width * foot.rx,
+      height * foot.ry,
+      0,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  }
+
+  context.restore();
+}
+
 function drawCastShadow(
   context: CanvasRenderingContext2D,
   modelSource: OverlaySource,
@@ -845,6 +1080,59 @@ function drawObjectCutout(
   context.drawImage(cutoutCanvas, 0, 0);
 }
 
+function getSpatialRelightResult(
+  background: HTMLImageElement,
+  modelSource: OverlaySource,
+  activeOverlay: ActiveOverlayState,
+  globalLighting: LightingAnalysis | undefined,
+  onWarning: (message: string) => void,
+): SpatialRelightResult | undefined {
+  const settings = activeOverlay.spatialRelight;
+  if (
+    !settings?.enabled ||
+    !activeOverlay.ambientEnabled
+  ) {
+    return undefined;
+  }
+
+  try {
+    const canvasWidth = background.naturalWidth || background.width;
+    const canvasHeight = background.naturalHeight || background.height;
+    const metrics = getOverlayMetrics(modelSource, canvasWidth, activeOverlay.transform);
+    const sampleBounds = computeOverlaySampleBounds(
+      activeOverlay.transform,
+      metrics.width,
+      metrics.height,
+      canvasWidth,
+      canvasHeight,
+    );
+
+    if (!sampleBounds) {
+      return undefined;
+    }
+
+    const backgroundContext = createBackgroundCanvasContext(background);
+    const lightingMap = buildSpatialLightingMap(
+      backgroundContext,
+      sampleBounds,
+      settings.gridSize,
+      settings.gridSize,
+      globalLighting,
+    );
+
+    return {
+      lightingMap,
+      applied: true,
+    };
+  } catch {
+    onWarning(
+      "Spatial ambient relighting could not sample this overlay, so regular ambient matching was used.",
+    );
+
+    return undefined;
+  }
+}
+
 function getPositionBasedAmbientState(
   background: HTMLImageElement,
   modelSource: OverlaySource,
@@ -864,9 +1152,10 @@ function getPositionBasedAmbientState(
     const canvasWidth = background.naturalWidth || background.width;
     const canvasHeight = background.naturalHeight || background.height;
     const metrics = getOverlayMetrics(modelSource, canvasWidth, activeOverlay.transform);
-    const sampleBounds = getOverlaySampleBounds(
+    const sampleBounds = computeOverlaySampleBounds(
       activeOverlay.transform,
-      metrics,
+      metrics.width,
+      metrics.height,
       canvasWidth,
       canvasHeight,
     );
@@ -894,61 +1183,6 @@ function getPositionBasedAmbientState(
 
     return { enabled: false };
   }
-}
-
-function getOverlaySampleBounds(
-  transform: OverlayTransform,
-  metrics: OverlayMetrics,
-  canvasWidth: number,
-  canvasHeight: number,
-): CanvasBounds | null {
-  if (canvasWidth <= 0 || canvasHeight <= 0) {
-    return null;
-  }
-
-  const rotatedSize = getRotatedOverlaySize(
-    metrics.width,
-    metrics.height,
-    transform.rotation,
-  );
-  const paddingX = rotatedSize.width * 0.15;
-  const paddingY = rotatedSize.height * 0.15;
-  const left = Math.floor(transform.x - rotatedSize.width / 2 - paddingX);
-  const top = Math.floor(transform.y - rotatedSize.height / 2 - paddingY);
-  const right = Math.ceil(transform.x + rotatedSize.width / 2 + paddingX);
-  const bottom = Math.ceil(transform.y + rotatedSize.height / 2 + paddingY);
-  const x = clampNumber(left, 0, canvasWidth - 1);
-  const y = clampNumber(top, 0, canvasHeight - 1);
-  const clampedRight = clampNumber(right, x + 1, canvasWidth);
-  const clampedBottom = clampNumber(bottom, y + 1, canvasHeight);
-  const width = Math.round(clampedRight - x);
-  const height = Math.round(clampedBottom - y);
-
-  if (width < 8 || height < 8) {
-    return null;
-  }
-
-  return {
-    x: Math.round(x),
-    y: Math.round(y),
-    width,
-    height,
-  };
-}
-
-function getRotatedOverlaySize(
-  width: number,
-  height: number,
-  rotation: number,
-) {
-  const radians = Math.abs((rotation * Math.PI) / 180);
-  const cos = Math.abs(Math.cos(radians));
-  const sin = Math.abs(Math.sin(radians));
-
-  return {
-    width: width * cos + height * sin,
-    height: width * sin + height * cos,
-  };
 }
 
 function getBackgroundImageData(
@@ -986,6 +1220,25 @@ function getBackgroundImageData(
   return sampleContext.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height);
 }
 
+function createBackgroundCanvasContext(background: HTMLImageElement) {
+  const width = background.naturalWidth || background.width;
+  const height = background.naturalHeight || background.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!context) {
+    throw new Error("Unable to create spatial lighting sample canvas.");
+  }
+
+  context.drawImage(background, 0, 0, width, height);
+
+  return context;
+}
+
 function constrainLocalAdjustmentsForOverlay(
   adjustments: LocalAmbientAdjustments,
   activeOverlay: ActiveOverlayState,
@@ -1012,6 +1265,11 @@ function createAmbientMatchedModelCanvas(
   lighting: LightingAnalysis | undefined,
   ambientMatchStrength: number,
   localAdjustments: LocalAmbientAdjustments | undefined,
+  spatialRelight: SpatialRelightSettings | undefined,
+  spatialRelightResult: SpatialRelightResult | undefined,
+  modelType: PlacedOverlay["modelType"],
+  windowGlass: WindowGlassSettings | undefined,
+  groundingRealism: GroundingRealismSettings | undefined,
 ) {
   const workingCanvas = document.createElement("canvas");
   workingCanvas.width = Math.max(1, Math.round(width));
@@ -1117,7 +1375,61 @@ function createAmbientMatchedModelCanvas(
 
   workingContext.putImageData(imageData, 0, 0);
 
-  return workingCanvas;
+  if (
+    spatialRelight?.enabled &&
+    spatialRelightResult?.applied &&
+    spatialRelightResult.lightingMap
+  ) {
+    const spatialCanvas = applySpatialRelightingToOverlayCanvas(
+      workingCanvas,
+      spatialRelightResult.lightingMap,
+      spatialRelight,
+      lighting,
+      modelType,
+      windowGlass,
+    );
+
+    return applyCameraMatchForOverlay(
+      spatialCanvas,
+      groundingRealism,
+      modelType,
+      windowGlass,
+    );
+  }
+
+  return applyCameraMatchForOverlay(
+    workingCanvas,
+    groundingRealism,
+    modelType,
+    windowGlass,
+  );
+}
+
+function applyCameraMatchForOverlay(
+  modelCanvas: HTMLCanvasElement,
+  groundingRealism: GroundingRealismSettings | undefined,
+  modelType: PlacedOverlay["modelType"],
+  windowGlass: WindowGlassSettings | undefined,
+) {
+  const cameraMatch = groundingRealism?.cameraMatch;
+  if (!cameraMatch?.enabled) {
+    return modelCanvas;
+  }
+
+  const outdoorWindow = modelType === "window" && windowGlass?.mode === "outdoor";
+
+  return applyCameraMatchToOverlayCanvas(
+    modelCanvas,
+    outdoorWindow
+      ? {
+          ...cameraMatch,
+          blurPx: Math.min(cameraMatch.blurPx, 0.45),
+          edgeFeatherPx: Math.min(cameraMatch.edgeFeatherPx, 0.6),
+          grainAmount: cameraMatch.grainAmount * 0.65,
+        }
+      : cameraMatch,
+    `${modelType}:${windowGlass?.mode ?? "none"}`,
+  );
 }
 
 function createModelSilhouetteCanvas(
@@ -1190,6 +1502,62 @@ function drawOverlayGuide(
     outlineHeight,
   );
   context.restore();
+}
+
+function drawFloorAnchorGuide(
+  context: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  groundingRealism: GroundingRealismSettings | undefined,
+) {
+  const floorAnchor = groundingRealism?.floorAnchor;
+  if (!floorAnchor?.enabled || !floorAnchor.showGuide) {
+    return;
+  }
+
+  const floorAngle = groundingRealism?.perspective.floorAngle ?? 0;
+  const anchorX = floorAnchor.anchorX * canvasWidth;
+  const anchorY = floorAnchor.anchorY * canvasHeight;
+  const guideLength = Math.min(canvasWidth, canvasHeight) * 0.18;
+
+  context.save();
+  context.translate(anchorX, anchorY);
+  context.rotate((floorAngle * Math.PI) / 180);
+  context.strokeStyle = "rgba(20, 184, 166, 0.82)";
+  context.lineWidth = 2;
+  context.setLineDash([8, 6]);
+  context.beginPath();
+  context.moveTo(-guideLength, 0);
+  context.lineTo(guideLength, 0);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = "rgba(20, 184, 166, 0.9)";
+  context.beginPath();
+  context.arc(0, 0, 5, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function getGroundedOverlayTransform(
+  transform: OverlayTransform,
+  metrics: OverlayMetrics,
+  groundingRealism: GroundingRealismSettings | undefined,
+  canvasWidth: number,
+  canvasHeight: number,
+): OverlayTransform {
+  const floorAnchor = groundingRealism?.floorAnchor;
+  if (
+    !floorAnchor?.enabled ||
+    !floorAnchor.snapBottomToAnchor
+  ) {
+    return transform;
+  }
+
+  return {
+    ...transform,
+    x: floorAnchor.anchorX * canvasWidth,
+    y: floorAnchor.anchorY * canvasHeight - metrics.height / 2,
+  };
 }
 
 function createModelOutlineCanvas(

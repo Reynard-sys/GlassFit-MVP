@@ -9,7 +9,9 @@ import { ProductModelPanel } from "@/components/ProductModelPanel";
 import { ResultPreview } from "@/components/ResultPreview";
 import { UploadPanel } from "@/components/UploadPanel";
 import {
+  DEFAULT_GROUNDING_REALISM,
   DEFAULT_OVERLAY_TRANSFORM,
+  DEFAULT_SPATIAL_RELIGHT_SETTINGS,
   deriveShadowSettingsFromLighting,
   getInitialOverlayTransform,
 } from "@/lib/canvasUtils";
@@ -24,11 +26,13 @@ import type {
   ActiveOverlayState,
   CanvasEditorHandle,
   FlattenedOverlayResult,
+  GroundingRealismSettings,
   ImageAnalysisResponse,
   OverlayTransform,
   PlacedOverlay,
   ProductModelType,
   ShadowSettings,
+  SpatialRelightSettings,
   WindowGlassSettings,
 } from "@/lib/types";
 
@@ -162,6 +166,8 @@ export function GlassFitMvp() {
       shadowSettings: getDefaultShadowSettings(),
       ambientEnabled: true,
       positionBasedAmbientEnabled: true,
+      spatialRelight: cloneSpatialRelightSettings(DEFAULT_SPATIAL_RELIGHT_SETTINGS),
+      groundingRealism: getDefaultGroundingRealism(modelType),
       occlusionObjectIds: [],
       windowGlass:
         modelType === "window" ? getDefaultWindowGlassSettings() : undefined,
@@ -326,6 +332,12 @@ export function GlassFitMvp() {
         shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
         ambientEnabled: activeOverlay.ambientEnabled,
         positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
+        spatialRelight: cloneSpatialRelightSettings(
+          getSpatialRelightSettings(activeOverlay),
+        ),
+        groundingRealism: cloneGroundingRealismSettings(
+          getGroundingRealismSettings(activeOverlay, activeOverlay.modelType),
+        ),
         occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
         windowGlass: getWindowGlassForModel(
           activeOverlay.modelType,
@@ -363,6 +375,10 @@ export function GlassFitMvp() {
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
       ambientEnabled: overlay.ambientEnabled,
       positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
+      spatialRelight: cloneSpatialRelightSettings(getSpatialRelightSettings(overlay)),
+      groundingRealism: cloneGroundingRealismSettings(
+        getGroundingRealismSettings(overlay, overlay.modelType),
+      ),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
         getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
@@ -391,6 +407,10 @@ export function GlassFitMvp() {
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
       ambientEnabled: overlay.ambientEnabled,
       positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
+      spatialRelight: cloneSpatialRelightSettings(getSpatialRelightSettings(overlay)),
+      groundingRealism: cloneGroundingRealismSettings(
+        getGroundingRealismSettings(overlay, overlay.modelType),
+      ),
       occlusionObjectIds: [...overlay.occlusionObjectIds],
       windowGlass:
         getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
@@ -603,6 +623,13 @@ function createPlacedOverlayFromActive(
     ambientEnabled: activeOverlay.ambientEnabled,
     positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
     localAmbient: flattenedOverlay.localAmbient,
+    spatialRelight: cloneSpatialRelightSettings(
+      getSpatialRelightSettings(activeOverlay),
+    ),
+    spatialRelightResult: flattenedOverlay.spatialRelightResult,
+    groundingRealism: cloneGroundingRealismSettings(
+      getGroundingRealismSettings(activeOverlay, activeOverlay.modelType),
+    ),
     windowGlass: getWindowGlassForModel(
       activeOverlay.modelType,
       activeOverlay.windowGlass,
@@ -631,6 +658,56 @@ function getPositionBasedAmbientEnabled(overlay: {
   positionBasedAmbientEnabled?: boolean;
 }) {
   return overlay.positionBasedAmbientEnabled ?? true;
+}
+
+function getSpatialRelightSettings(overlay: {
+  spatialRelight?: SpatialRelightSettings;
+}) {
+  return overlay.spatialRelight ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+}
+
+function cloneSpatialRelightSettings(
+  settings: SpatialRelightSettings,
+): SpatialRelightSettings {
+  return { ...settings };
+}
+
+function getGroundingRealismSettings(
+  overlay: { groundingRealism?: GroundingRealismSettings },
+  modelType: ProductModelType,
+) {
+  return overlay.groundingRealism ?? getDefaultGroundingRealism(modelType);
+}
+
+function getDefaultGroundingRealism(
+  modelType: ProductModelType,
+): GroundingRealismSettings {
+  const defaults = cloneGroundingRealismSettings(DEFAULT_GROUNDING_REALISM);
+
+  if (modelType === "window") {
+    return {
+      ...defaults,
+      groundingShadow: {
+        ...defaults.groundingShadow,
+        baseContactStrength: 0.18,
+        legContactStrength: 0.12,
+        useFootPoints: false,
+      },
+    };
+  }
+
+  return defaults;
+}
+
+function cloneGroundingRealismSettings(
+  settings: GroundingRealismSettings,
+): GroundingRealismSettings {
+  return {
+    perspective: { ...settings.perspective },
+    floorAnchor: { ...settings.floorAnchor },
+    groundingShadow: { ...settings.groundingShadow },
+    cameraMatch: { ...settings.cameraMatch },
+  };
 }
 
 function cloneWindowGlassSettings(

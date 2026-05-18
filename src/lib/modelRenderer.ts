@@ -440,29 +440,45 @@ function createProceduralDrawerModel() {
   const group = new THREE.Group();
 
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0xf3f0e8,
+    color: 0xeee9df,
     metalness: 0.08,
-    roughness: 0.42,
+    roughness: 0.58,
   });
   const drawerMaterial = new THREE.MeshStandardMaterial({
-    color: 0xe7e0d1,
+    color: 0xe5ddcf,
     metalness: 0.05,
-    roughness: 0.38,
+    roughness: 0.52,
   });
   const aluminumMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8c989d,
+    color: 0x9aa3a5,
     metalness: 0.65,
-    roughness: 0.24,
+    roughness: 0.31,
   });
   const shadowMaterial = new THREE.MeshStandardMaterial({
     color: 0x48433d,
     metalness: 0.08,
     roughness: 0.5,
   });
+  const grooveMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6f675d,
+    metalness: 0.04,
+    roughness: 0.72,
+  });
+  const sideMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8d0c1,
+    metalness: 0.04,
+    roughness: 0.64,
+  });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.7, 1.45), bodyMaterial);
   body.position.y = 1.35;
   group.add(body);
+
+  for (const x of [-1.12, 1.12]) {
+    const sidePanel = new THREE.Mesh(new THREE.BoxGeometry(0.035, 2.54, 1.36), sideMaterial);
+    sidePanel.position.set(x, 1.35, 0.015);
+    group.add(sidePanel);
+  }
 
   for (let index = 0; index < 3; index += 1) {
     const drawer = new THREE.Mesh(
@@ -478,11 +494,36 @@ function createProceduralDrawerModel() {
     );
     handle.position.set(0, drawer.position.y, 0.84);
     group.add(handle);
+
+    const handleHighlight = new THREE.Mesh(
+      new THREE.BoxGeometry(1.02, 0.018, 0.018),
+      new THREE.MeshStandardMaterial({
+        color: 0xd5dcdd,
+        metalness: 0.45,
+        roughness: 0.22,
+      }),
+    );
+    handleHighlight.position.set(0, drawer.position.y + 0.022, 0.89);
+    group.add(handleHighlight);
+  }
+
+  for (const y of [1.73, 0.95, 0.18]) {
+    const groove = new THREE.Mesh(new THREE.BoxGeometry(1.98, 0.035, 0.035), grooveMaterial);
+    groove.position.set(0, y, 0.83);
+    group.add(groove);
   }
 
   const top = new THREE.Mesh(new THREE.BoxGeometry(2.34, 0.14, 1.58), aluminumMaterial);
   top.position.set(0, 2.78, 0);
   group.add(top);
+
+  const topFace = new THREE.Mesh(new THREE.BoxGeometry(2.26, 0.018, 1.5), new THREE.MeshStandardMaterial({
+    color: 0xb2babc,
+    metalness: 0.52,
+    roughness: 0.28,
+  }));
+  topFace.position.set(0, 2.86, 0.01);
+  group.add(topFace);
 
   for (const x of [-0.82, 0.82]) {
     for (const z of [-0.5, 0.5]) {

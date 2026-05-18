@@ -68,6 +68,82 @@ export interface LocalAmbientState {
   adjustments?: LocalAmbientAdjustments;
 }
 
+export interface LightingGridCell {
+  row: number;
+  col: number;
+  meanRgb: [number, number, number];
+  meanIntensity: number;
+  contrast: number;
+  saturation: number;
+}
+
+export interface SpatialLightingMap {
+  bounds: CanvasBounds;
+  rows: number;
+  cols: number;
+  globalMeanIntensity: number;
+  cells: LightingGridCell[];
+  lightDirection?: {
+    x: number;
+    y: number;
+  };
+}
+
+export interface SpatialRelightSettings {
+  enabled: boolean;
+  intensity: number;
+  colorInfluence: number;
+  directionalInfluence: number;
+  gridSize: 3 | 5;
+}
+
+export interface SpatialRelightResult {
+  lightingMap: SpatialLightingMap;
+  applied: boolean;
+}
+
+export interface PerspectiveSettings {
+  enabled: boolean;
+  skewX: number;
+  skewY: number;
+  verticalTilt: number;
+  floorAngle: number;
+  perspectiveX: number;
+  perspectiveY: number;
+}
+
+export interface FloorAnchorSettings {
+  enabled: boolean;
+  anchorX: number;
+  anchorY: number;
+  showGuide: boolean;
+  snapBottomToAnchor: boolean;
+}
+
+export interface GroundingShadowSettings {
+  enabled: boolean;
+  baseContactStrength: number;
+  legContactStrength: number;
+  contactBlur: number;
+  floorFade: number;
+  useFootPoints: boolean;
+}
+
+export interface CameraMatchSettings {
+  enabled: boolean;
+  blurPx: number;
+  grainAmount: number;
+  edgeFeatherPx: number;
+  compressionSoftness: number;
+}
+
+export interface GroundingRealismSettings {
+  perspective: PerspectiveSettings;
+  floorAnchor: FloorAnchorSettings;
+  groundingShadow: GroundingShadowSettings;
+  cameraMatch: CameraMatchSettings;
+}
+
 export interface DetectedObject {
   id: string;
   label: string;
@@ -145,6 +221,9 @@ export interface PlacedOverlay {
   ambientEnabled: boolean;
   positionBasedAmbientEnabled?: boolean;
   localAmbient?: LocalAmbientState;
+  spatialRelight?: SpatialRelightSettings;
+  spatialRelightResult?: SpatialRelightResult;
+  groundingRealism?: GroundingRealismSettings;
   visible: boolean;
   windowGlass?: WindowGlassSettings;
   locked?: boolean;
@@ -163,6 +242,8 @@ export interface ActiveOverlayState {
   shadowSettings: ShadowSettings;
   ambientEnabled: boolean;
   positionBasedAmbientEnabled?: boolean;
+  spatialRelight?: SpatialRelightSettings;
+  groundingRealism?: GroundingRealismSettings;
   occlusionObjectIds: string[];
   windowGlass?: WindowGlassSettings;
 }
@@ -170,6 +251,7 @@ export interface ActiveOverlayState {
 export interface FlattenedOverlayResult {
   dataUrl: string;
   localAmbient?: LocalAmbientState;
+  spatialRelightResult?: SpatialRelightResult;
 }
 
 export interface CanvasEditorHandle {

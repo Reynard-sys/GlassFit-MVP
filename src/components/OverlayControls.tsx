@@ -2,12 +2,18 @@
 
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { CollapsiblePanel } from "@/components/CollapsiblePanel";
-import { clamp } from "@/lib/canvasUtils";
+import {
+  clamp,
+  DEFAULT_GROUNDING_REALISM,
+  DEFAULT_SPATIAL_RELIGHT_SETTINGS,
+} from "@/lib/canvasUtils";
 import type {
   ActiveOverlayState,
   GlassViewMode,
+  GroundingRealismSettings,
   OverlayTransform,
   ShadowSettings,
+  SpatialRelightSettings,
   WindowGlassSettings,
 } from "@/lib/types";
 
@@ -36,6 +42,9 @@ export function OverlayControls({
 }: OverlayControlsProps) {
   const transform = activeOverlay?.transform;
   const shadowSettings = activeOverlay?.shadowSettings;
+  const groundingRealism = getGroundingRealismSettings(
+    activeOverlay?.groundingRealism,
+  );
 
   function setTransform(
     update: SetStateAction<OverlayTransform>,
@@ -80,6 +89,90 @@ export function OverlayControls({
     setActiveOverlay((current) =>
       current ? { ...current, positionBasedAmbientEnabled: enabled } : current,
     );
+  }
+
+  function updateSpatialRelightSettings(
+    update: Partial<SpatialRelightSettings>,
+  ) {
+    setActiveOverlay((current) =>
+      current
+        ? {
+            ...current,
+            spatialRelight: {
+              ...getSpatialRelightSettings(current.spatialRelight),
+              ...update,
+            },
+          }
+        : current,
+    );
+  }
+
+  function toggleSpatialRelight(enabled: boolean) {
+    updateSpatialRelightSettings({ enabled });
+  }
+
+  function updateGroundingRealismSettings(
+    update: Partial<GroundingRealismSettings>,
+  ) {
+    setActiveOverlay((current) =>
+      current
+        ? {
+            ...current,
+            groundingRealism: {
+              ...getGroundingRealismSettings(current.groundingRealism),
+              ...update,
+            },
+          }
+        : current,
+    );
+  }
+
+  function updatePerspectiveSettings(
+    update: Partial<GroundingRealismSettings["perspective"]>,
+  ) {
+    const settings = getGroundingRealismSettings(activeOverlay?.groundingRealism);
+    updateGroundingRealismSettings({
+      perspective: {
+        ...settings.perspective,
+        ...update,
+      },
+    });
+  }
+
+  function updateFloorAnchorSettings(
+    update: Partial<GroundingRealismSettings["floorAnchor"]>,
+  ) {
+    const settings = getGroundingRealismSettings(activeOverlay?.groundingRealism);
+    updateGroundingRealismSettings({
+      floorAnchor: {
+        ...settings.floorAnchor,
+        ...update,
+      },
+    });
+  }
+
+  function updateGroundingShadowSettings(
+    update: Partial<GroundingRealismSettings["groundingShadow"]>,
+  ) {
+    const settings = getGroundingRealismSettings(activeOverlay?.groundingRealism);
+    updateGroundingRealismSettings({
+      groundingShadow: {
+        ...settings.groundingShadow,
+        ...update,
+      },
+    });
+  }
+
+  function updateCameraMatchSettings(
+    update: Partial<GroundingRealismSettings["cameraMatch"]>,
+  ) {
+    const settings = getGroundingRealismSettings(activeOverlay?.groundingRealism);
+    updateGroundingRealismSettings({
+      cameraMatch: {
+        ...settings.cameraMatch,
+        ...update,
+      },
+    });
   }
 
   function updateWindowGlassSettings(update: Partial<WindowGlassSettings>) {
@@ -210,6 +303,218 @@ export function OverlayControls({
             />
           ) : null}
 
+          <ControlGroup defaultOpen={false} title="Perspective & Grounding">
+            <div className="space-y-4">
+              <ShadowToggle
+                checked={groundingRealism.perspective.enabled}
+                label="Enable perspective adjustment"
+                onChange={(enabled) => updatePerspectiveSettings({ enabled })}
+              />
+              {groundingRealism.perspective.enabled ? (
+                <div className="space-y-4">
+                  <ControlSlider
+                    label="Skew X"
+                    max={0.35}
+                    min={-0.35}
+                    onChange={(skewX) => updatePerspectiveSettings({ skewX })}
+                    step={0.01}
+                    value={groundingRealism.perspective.skewX}
+                    valueLabel={groundingRealism.perspective.skewX.toFixed(2)}
+                  />
+                  <ControlSlider
+                    label="Skew Y"
+                    max={0.2}
+                    min={-0.2}
+                    onChange={(skewY) => updatePerspectiveSettings({ skewY })}
+                    step={0.01}
+                    value={groundingRealism.perspective.skewY}
+                    valueLabel={groundingRealism.perspective.skewY.toFixed(2)}
+                  />
+                  <ControlSlider
+                    label="Vertical tilt"
+                    max={0.25}
+                    min={-0.25}
+                    onChange={(verticalTilt) =>
+                      updatePerspectiveSettings({ verticalTilt })
+                    }
+                    step={0.01}
+                    value={groundingRealism.perspective.verticalTilt}
+                    valueLabel={groundingRealism.perspective.verticalTilt.toFixed(2)}
+                  />
+                  <ControlSlider
+                    label="Floor angle"
+                    max={45}
+                    min={-45}
+                    onChange={(floorAngle) =>
+                      updatePerspectiveSettings({ floorAngle })
+                    }
+                    step={1}
+                    value={groundingRealism.perspective.floorAngle}
+                    valueLabel={`${Math.round(groundingRealism.perspective.floorAngle)} deg`}
+                  />
+                  <ControlSlider
+                    label="Perspective X"
+                    max={0.3}
+                    min={-0.3}
+                    onChange={(perspectiveX) =>
+                      updatePerspectiveSettings({ perspectiveX })
+                    }
+                    step={0.01}
+                    value={groundingRealism.perspective.perspectiveX}
+                    valueLabel={groundingRealism.perspective.perspectiveX.toFixed(2)}
+                  />
+                  <ControlSlider
+                    label="Perspective Y"
+                    max={0.3}
+                    min={-0.3}
+                    onChange={(perspectiveY) =>
+                      updatePerspectiveSettings({ perspectiveY })
+                    }
+                    step={0.01}
+                    value={groundingRealism.perspective.perspectiveY}
+                    valueLabel={groundingRealism.perspective.perspectiveY.toFixed(2)}
+                  />
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-2 gap-2">
+                <ShadowToggle
+                  checked={groundingRealism.floorAnchor.showGuide}
+                  label="Show floor guide"
+                  onChange={(showGuide) =>
+                    updateFloorAnchorSettings({ showGuide })
+                  }
+                />
+                <ShadowToggle
+                  checked={groundingRealism.floorAnchor.snapBottomToAnchor}
+                  label="Snap bottom"
+                  onChange={(snapBottomToAnchor) =>
+                    updateFloorAnchorSettings({ snapBottomToAnchor })
+                  }
+                />
+              </div>
+              <ControlSlider
+                label="Floor anchor X"
+                max={1}
+                min={0}
+                onChange={(anchorX) =>
+                  updateFloorAnchorSettings({ anchorX: clamp(anchorX, 0, 1) })
+                }
+                step={0.01}
+                value={groundingRealism.floorAnchor.anchorX}
+                valueLabel={`${Math.round(groundingRealism.floorAnchor.anchorX * 100)}%`}
+              />
+              <ControlSlider
+                label="Floor anchor Y"
+                max={1}
+                min={0}
+                onChange={(anchorY) =>
+                  updateFloorAnchorSettings({ anchorY: clamp(anchorY, 0, 1) })
+                }
+                step={0.01}
+                value={groundingRealism.floorAnchor.anchorY}
+                valueLabel={`${Math.round(groundingRealism.floorAnchor.anchorY * 100)}%`}
+              />
+
+              <ShadowToggle
+                checked={groundingRealism.groundingShadow.enabled}
+                label="Enhanced contact shadows"
+                onChange={(enabled) =>
+                  updateGroundingShadowSettings({ enabled })
+                }
+              />
+              {groundingRealism.groundingShadow.enabled ? (
+                <div className="space-y-4">
+                  <ControlSlider
+                    label="Base contact"
+                    max={1}
+                    min={0}
+                    onChange={(baseContactStrength) =>
+                      updateGroundingShadowSettings({ baseContactStrength })
+                    }
+                    step={0.01}
+                    value={groundingRealism.groundingShadow.baseContactStrength}
+                    valueLabel={`${Math.round(
+                      groundingRealism.groundingShadow.baseContactStrength * 100,
+                    )}%`}
+                  />
+                  <ControlSlider
+                    label="Leg contact"
+                    max={1}
+                    min={0}
+                    onChange={(legContactStrength) =>
+                      updateGroundingShadowSettings({ legContactStrength })
+                    }
+                    step={0.01}
+                    value={groundingRealism.groundingShadow.legContactStrength}
+                    valueLabel={`${Math.round(
+                      groundingRealism.groundingShadow.legContactStrength * 100,
+                    )}%`}
+                  />
+                  <ControlSlider
+                    label="Contact blur"
+                    max={28}
+                    min={0}
+                    onChange={(contactBlur) =>
+                      updateGroundingShadowSettings({ contactBlur })
+                    }
+                    step={1}
+                    value={groundingRealism.groundingShadow.contactBlur}
+                    valueLabel={`${Math.round(groundingRealism.groundingShadow.contactBlur)}px`}
+                  />
+                  <ShadowToggle
+                    checked={groundingRealism.groundingShadow.useFootPoints}
+                    label="Foot point shadows"
+                    onChange={(useFootPoints) =>
+                      updateGroundingShadowSettings({ useFootPoints })
+                    }
+                  />
+                </div>
+              ) : null}
+
+              <ShadowToggle
+                checked={groundingRealism.cameraMatch.enabled}
+                label="Camera match"
+                onChange={(enabled) => updateCameraMatchSettings({ enabled })}
+              />
+              {groundingRealism.cameraMatch.enabled ? (
+                <div className="space-y-4">
+                  <ControlSlider
+                    label="Edge softness"
+                    max={3}
+                    min={0}
+                    onChange={(edgeFeatherPx) =>
+                      updateCameraMatchSettings({ edgeFeatherPx })
+                    }
+                    step={0.1}
+                    value={groundingRealism.cameraMatch.edgeFeatherPx}
+                    valueLabel={`${groundingRealism.cameraMatch.edgeFeatherPx.toFixed(1)}px`}
+                  />
+                  <ControlSlider
+                    label="Camera blur"
+                    max={3}
+                    min={0}
+                    onChange={(blurPx) => updateCameraMatchSettings({ blurPx })}
+                    step={0.1}
+                    value={groundingRealism.cameraMatch.blurPx}
+                    valueLabel={`${groundingRealism.cameraMatch.blurPx.toFixed(1)}px`}
+                  />
+                  <ControlSlider
+                    label="Grain"
+                    max={0.2}
+                    min={0}
+                    onChange={(grainAmount) =>
+                      updateCameraMatchSettings({ grainAmount })
+                    }
+                    step={0.01}
+                    value={groundingRealism.cameraMatch.grainAmount}
+                    valueLabel={`${Math.round(groundingRealism.cameraMatch.grainAmount * 100)}%`}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </ControlGroup>
+
           <ControlGroup title="Lighting & Shadows">
             <div className="space-y-3">
               <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm font-medium text-stone-800">
@@ -239,6 +544,39 @@ export function OverlayControls({
                   type="checkbox"
                 />
               </label>
+              <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-800">
+                <span>
+                  <span className="block font-medium">
+                    Spatial ambient relighting
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-stone-500">
+                    Varies the model&apos;s shading based on the lighting around its exact placement area.
+                  </span>
+                </span>
+                <input
+                  checked={getSpatialRelightSettings(activeOverlay.spatialRelight).enabled}
+                  className="h-5 w-5 shrink-0 accent-teal-600"
+                  onChange={(event) => toggleSpatialRelight(event.target.checked)}
+                  type="checkbox"
+                />
+              </label>
+              {getSpatialRelightSettings(activeOverlay.spatialRelight).enabled ? (
+                <ControlSlider
+                  label="Relighting strength"
+                  max={1}
+                  min={0}
+                  onChange={(intensity) =>
+                    updateSpatialRelightSettings({
+                      intensity: clamp(intensity, 0, 1),
+                    })
+                  }
+                  step={0.01}
+                  value={getSpatialRelightSettings(activeOverlay.spatialRelight).intensity}
+                  valueLabel={`${Math.round(
+                    getSpatialRelightSettings(activeOverlay.spatialRelight).intensity * 100,
+                  )}%`}
+                />
+              ) : null}
               <button
                 className="w-full rounded-md border border-stone-300 px-2 py-2 text-sm font-medium text-stone-700 transition hover:bg-white"
                 onClick={onResetShadow}
@@ -601,6 +939,18 @@ function getWindowGlassSettings(
     tintColor: settings?.tintColor ?? "#dbeafe",
     outdoorTexturePath: settings?.outdoorTexturePath ?? "/textures/outdoor-view.jpg",
   };
+}
+
+function getSpatialRelightSettings(
+  settings: SpatialRelightSettings | undefined,
+): SpatialRelightSettings {
+  return settings ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+}
+
+function getGroundingRealismSettings(
+  settings: GroundingRealismSettings | undefined,
+): GroundingRealismSettings {
+  return settings ?? DEFAULT_GROUNDING_REALISM;
 }
 
 function getDefaultOpacityForGlassMode(mode: GlassViewMode) {
