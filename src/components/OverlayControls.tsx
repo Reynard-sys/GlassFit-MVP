@@ -186,20 +186,6 @@ export function OverlayControls({
                 value={transform.modelPitch}
                 valueLabel={`${Math.round(transform.modelPitch)} deg`}
               />
-              <ControlSlider
-                label="Opacity"
-                max={1}
-                min={0.2}
-                onChange={(value) =>
-                  setTransform((current) => ({
-                    ...current,
-                    opacity: clamp(value, 0.2, 1),
-                  }))
-                }
-                step={0.01}
-                value={transform.opacity}
-                valueLabel={`${Math.round(transform.opacity * 100)}%`}
-              />
               <button
                 className="w-full rounded-md border border-stone-300 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-white"
                 onClick={onReset}

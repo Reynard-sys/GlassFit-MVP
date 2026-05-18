@@ -28,6 +28,10 @@ const GLASS_KEYWORDS = [
   "transparent",
   "glazing",
 ];
+const CAMERA_BASE_DISTANCE = new THREE.Vector3(3.4, 1.8, 5.6).length();
+const CAMERA_DIRECTION = new THREE.Vector3(3.4, 1.8, 5.6).normalize();
+const MODEL_FRAME_TARGET = 0.82;
+const MODEL_FRAME_MIN_SCALE = 0.12;
 
 export class ProductModelRenderer {
   readonly canvas: HTMLCanvasElement;
@@ -140,6 +144,7 @@ export class ProductModelRenderer {
       THREE.MathUtils.degToRad(transform.modelYaw),
       0,
     );
+    this.frameModelInCamera();
     this.renderer.render(this.scene, this.camera);
 
     return this.canvas;
@@ -388,6 +393,46 @@ export class ProductModelRenderer {
     this.rimLight.color.set(lighting.warmth >= 0 ? 0xffead3 : 0xd8eeff);
     this.rimLight.intensity = THREE.MathUtils.clamp(0.35 + lighting.sharpness * 0.45, 0.28, 1);
     this.rimLight.position.set(-direction.x * 3.5 || -3, 2.4, -3.4);
+  }
+
+  private frameModelInCamera() {
+    if (!this.modelRoot) {
+      return;
+    }
+
+    this.modelGroup.position.set(0, 0, 0);
+    this.modelGroup.scale.setScalar(1);
+    this.camera.position.copy(CAMERA_DIRECTION).multiplyScalar(CAMERA_BASE_DISTANCE);
+    this.camera.lookAt(0, 0, 0);
+    this.camera.updateProjectionMatrix();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      this.modelGroup.updateMatrixWorld(true);
+      this.camera.updateMatrixWorld(true);
+
+      const bounds = getProjectedObjectBounds(this.modelGroup, this.camera);
+      if (!bounds) {
+        return;
+      }
+
+      const largestProjectedEdge = Math.max(
+        Math.abs(bounds.minX),
+        Math.abs(bounds.maxX),
+        Math.abs(bounds.minY),
+        Math.abs(bounds.maxY),
+      );
+
+      if (largestProjectedEdge <= MODEL_FRAME_TARGET) {
+        return;
+      }
+
+      const nextScale = THREE.MathUtils.clamp(
+        this.modelGroup.scale.x * (MODEL_FRAME_TARGET / largestProjectedEdge),
+        MODEL_FRAME_MIN_SCALE,
+        1,
+      );
+      this.modelGroup.scale.setScalar(nextScale);
+    }
   }
 }
 
@@ -813,6 +858,55 @@ function materialSetContains(
   }
 
   return materialSet.has(material);
+}
+
+function getProjectedObjectBounds(
+  object: THREE.Object3D,
+  camera: THREE.PerspectiveCamera,
+) {
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) {
+    return null;
+  }
+
+  const corners = getBoxCorners(box);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const corner of corners) {
+    const projected = corner.project(camera);
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
+      continue;
+    }
+
+    minX = Math.min(minX, projected.x);
+    minY = Math.min(minY, projected.y);
+    maxX = Math.max(maxX, projected.x);
+    maxY = Math.max(maxY, projected.y);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+    return null;
+  }
+
+  return { minX, minY, maxX, maxY };
+}
+
+function getBoxCorners(box: THREE.Box3) {
+  const { min, max } = box;
+
+  return [
+    new THREE.Vector3(min.x, min.y, min.z),
+    new THREE.Vector3(min.x, min.y, max.z),
+    new THREE.Vector3(min.x, max.y, min.z),
+    new THREE.Vector3(min.x, max.y, max.z),
+    new THREE.Vector3(max.x, min.y, min.z),
+    new THREE.Vector3(max.x, min.y, max.z),
+    new THREE.Vector3(max.x, max.y, min.z),
+    new THREE.Vector3(max.x, max.y, max.z),
+  ];
 }
 
 function colorFromRgb(rgb: [number, number, number]) {

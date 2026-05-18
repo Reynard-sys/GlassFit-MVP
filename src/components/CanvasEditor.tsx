@@ -490,7 +490,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
 
       if (
         !point ||
-        !isPointInsideOverlay(point, activeOverlay.transform, metrics)
+        !isPointInsideOverlay(
+          point,
+          activeOverlay.transform,
+          metrics,
+          modelCanvas ?? undefined,
+        )
       ) {
         return;
       }
@@ -622,7 +627,7 @@ function drawOverlayLayer(
   }
 
   if (includeGuide) {
-    drawOverlayGuide(context, transform, metrics);
+    drawOverlayGuide(context, modelSource, transform, metrics);
   }
 }
 
@@ -650,7 +655,7 @@ function drawModelOverlay(
   context.save();
   context.translate(transform.x, transform.y);
   context.rotate((transform.rotation * Math.PI) / 180);
-  context.globalAlpha = transform.opacity;
+  context.globalAlpha = 1;
   context.filter = filter;
   if (lighting) {
     context.drawImage(source, -width / 2, -height / 2, width, height);
@@ -911,19 +916,87 @@ function createModelSilhouetteCanvas(
 
 function drawOverlayGuide(
   context: CanvasRenderingContext2D,
+  modelSource: OverlaySource,
   transform: OverlayTransform,
   metrics: OverlayMetrics,
 ) {
   const { width, height } = metrics;
+  const outline = createModelOutlineCanvas(modelSource, metrics.sourceBounds);
+  const outlineWidth = width * (outline.width / metrics.sourceBounds.width);
+  const outlineHeight = height * (outline.height / metrics.sourceBounds.height);
 
   context.save();
   context.translate(transform.x, transform.y);
   context.rotate((transform.rotation * Math.PI) / 180);
-  context.strokeStyle = "rgba(20, 184, 166, 0.9)";
-  context.lineWidth = Math.max(2, Math.min(width, height) * 0.006);
-  context.setLineDash([10, 8]);
-  context.strokeRect(-width / 2, -height / 2, width, height);
+  context.drawImage(
+    outline,
+    -outlineWidth / 2,
+    -outlineHeight / 2,
+    outlineWidth,
+    outlineHeight,
+  );
   context.restore();
+}
+
+function createModelOutlineCanvas(
+  modelSource: OverlaySource,
+  sourceBounds: SourceBounds,
+) {
+  const outlinePadding = Math.max(4, Math.round(
+    Math.min(sourceBounds.width, sourceBounds.height) * 0.012,
+  ));
+  const outlineCanvas = document.createElement("canvas");
+  outlineCanvas.width = sourceBounds.width + outlinePadding * 2;
+  outlineCanvas.height = sourceBounds.height + outlinePadding * 2;
+
+  const outlineContext = outlineCanvas.getContext("2d");
+  if (!outlineContext) {
+    return outlineCanvas;
+  }
+
+  const offsets = [
+    [-outlinePadding, 0],
+    [outlinePadding, 0],
+    [0, -outlinePadding],
+    [0, outlinePadding],
+    [-outlinePadding, -outlinePadding],
+    [outlinePadding, -outlinePadding],
+    [-outlinePadding, outlinePadding],
+    [outlinePadding, outlinePadding],
+  ] as const;
+
+  for (const [offsetX, offsetY] of offsets) {
+    outlineContext.drawImage(
+      modelSource,
+      sourceBounds.x,
+      sourceBounds.y,
+      sourceBounds.width,
+      sourceBounds.height,
+      outlinePadding + offsetX,
+      outlinePadding + offsetY,
+      sourceBounds.width,
+      sourceBounds.height,
+    );
+  }
+
+  outlineContext.globalCompositeOperation = "source-in";
+  outlineContext.fillStyle = "rgba(20, 184, 166, 0.92)";
+  outlineContext.fillRect(0, 0, outlineCanvas.width, outlineCanvas.height);
+
+  outlineContext.globalCompositeOperation = "destination-out";
+  outlineContext.drawImage(
+    modelSource,
+    sourceBounds.x,
+    sourceBounds.y,
+    sourceBounds.width,
+    sourceBounds.height,
+    outlinePadding,
+    outlinePadding,
+    sourceBounds.width,
+    sourceBounds.height,
+  );
+
+  return outlineCanvas;
 }
 
 function getAmbientMatchStrength(windowGlass: WindowGlassSettings | undefined) {
@@ -950,6 +1023,7 @@ function isPointInsideOverlay(
   point: CanvasPoint,
   transform: OverlayTransform,
   metrics: OverlayMetrics,
+  modelSource?: OverlaySource,
 ) {
   const radians = (-transform.rotation * Math.PI) / 180;
   const translatedX = point.x - transform.x;
@@ -960,7 +1034,61 @@ function isPointInsideOverlay(
     translatedX * Math.sin(radians) + translatedY * Math.cos(radians);
   const { width, height } = metrics;
 
-  return Math.abs(localX) <= width / 2 && Math.abs(localY) <= height / 2;
+  if (Math.abs(localX) > width / 2 || Math.abs(localY) > height / 2) {
+    return false;
+  }
+
+  if (!modelSource) {
+    return true;
+  }
+
+  return hasVisibleOverlayPixel(modelSource, metrics, localX, localY);
+}
+
+function hasVisibleOverlayPixel(
+  modelSource: OverlaySource,
+  metrics: OverlayMetrics,
+  localX: number,
+  localY: number,
+) {
+  const { sourceBounds, width, height } = metrics;
+  const sourceX = sourceBounds.x + ((localX + width / 2) / width) * sourceBounds.width;
+  const sourceY = sourceBounds.y + ((localY + height / 2) / height) * sourceBounds.height;
+  const sampleRadius = 3;
+  const sampleSize = sampleRadius * 2 + 1;
+  const sampleCanvas = document.createElement("canvas");
+  sampleCanvas.width = sampleSize;
+  sampleCanvas.height = sampleSize;
+
+  const sampleContext = sampleCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!sampleContext) {
+    return true;
+  }
+
+  sampleContext.drawImage(
+    modelSource,
+    Math.round(sourceX) - sampleRadius,
+    Math.round(sourceY) - sampleRadius,
+    sampleSize,
+    sampleSize,
+    0,
+    0,
+    sampleSize,
+    sampleSize,
+  );
+
+  const imageData = sampleContext.getImageData(0, 0, sampleSize, sampleSize);
+  const data = imageData.data;
+
+  for (let index = 3; index < data.length; index += 4) {
+    if (data[index] > 8) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function getOverlayMetrics(

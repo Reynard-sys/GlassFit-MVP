@@ -13,7 +13,7 @@ export const DEFAULT_OVERLAY_TRANSFORM: OverlayTransform = {
   rotation: 0,
   modelPitch: 8,
   modelYaw: -24,
-  opacity: 0.92,
+  opacity: 1,
 };
 
 export const DEFAULT_SHADOW_SETTINGS: ShadowSettings = {
@@ -134,7 +134,7 @@ export function getInitialOverlayTransform(
     rotation: 0,
     modelPitch: 8,
     modelYaw: -24,
-    opacity: 0.92,
+    opacity: 1,
   };
 }
 
