@@ -1,38 +1,50 @@
 "use client";
 
+import { CollapsiblePanel } from "@/components/CollapsiblePanel";
 import type { DetectedObject } from "@/lib/types";
 import { formatConfidence } from "@/lib/canvasUtils";
 
 interface ObjectTogglePanelProps {
+  activeOverlayName?: string;
   objects: DetectedObject[];
   enabledObjectIds: string[];
+  hasActiveOverlay: boolean;
   onToggle: (objectId: string, enabled: boolean) => void;
 }
 
 export function ObjectTogglePanel({
+  activeOverlayName,
   objects,
   enabledObjectIds,
+  hasActiveOverlay,
   onToggle,
 }: ObjectTogglePanelProps) {
   const enabledSet = new Set(enabledObjectIds);
 
   return (
-    <section className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-semibold text-stone-950">
-          Detected Objects
-        </h2>
+    <CollapsiblePanel
+      badge={
         <span className="rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-600">
           {objects.length}
         </span>
-      </div>
-
-      {objects.length === 0 ? (
-        <p className="mt-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
+      }
+      title="Object-Aware Occlusion"
+    >
+      {!hasActiveOverlay ? (
+        <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
+          Add or edit an overlay to configure object-aware occlusion.
+        </p>
+      ) : objects.length === 0 ? (
+        <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
           No detected objects. Manual overlay editing is still available.
         </p>
       ) : (
-        <div className="mt-4 space-y-3">
+        <div className="space-y-3">
+          {activeOverlayName ? (
+            <p className="rounded-md bg-stone-50 px-3 py-2 text-xs font-medium text-stone-600">
+              Editing occlusion for {activeOverlayName}
+            </p>
+          ) : null}
           {objects.map((object) => {
             const enabled = enabledSet.has(object.id);
 
@@ -63,7 +75,6 @@ export function ObjectTogglePanel({
           })}
         </div>
       )}
-    </section>
+    </CollapsiblePanel>
   );
 }
-

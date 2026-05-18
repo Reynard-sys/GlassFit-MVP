@@ -1,6 +1,7 @@
 "use client";
 
 import type { ChangeEvent } from "react";
+import { CollapsiblePanel } from "@/components/CollapsiblePanel";
 import type { ImageAnalysisResponse } from "@/lib/types";
 import { getAmbientLabel } from "@/lib/canvasUtils";
 
@@ -29,24 +30,21 @@ export function UploadPanel({
   }
 
   return (
-    <section className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-base font-semibold text-stone-950">
-            Upload Space Photo
-          </h2>
-          {fileName ? (
-            <p className="mt-1 text-sm text-stone-600">{fileName}</p>
-          ) : null}
-        </div>
-        {isAnalyzing ? (
+    <CollapsiblePanel
+      badge={
+        isAnalyzing ? (
           <span className="rounded-md bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
             Analyzing
           </span>
-        ) : null}
-      </div>
+        ) : null
+      }
+      title="Upload Space Photo"
+    >
+      {fileName ? (
+        <p className="text-sm text-stone-600">{fileName}</p>
+      ) : null}
 
-      <label className="mt-4 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 px-4 py-5 text-center text-sm font-medium text-stone-700 transition hover:border-teal-500 hover:bg-teal-50">
+      <label className="mt-3 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 px-4 py-5 text-center text-sm font-medium text-stone-700 transition hover:border-teal-500 hover:bg-teal-50">
         <input
           accept=".jpg,.jpeg,.png,image/jpeg,image/png"
           className="sr-only"
@@ -119,6 +117,6 @@ export function UploadPanel({
           {analysis.warning}
         </p>
       ) : null}
-    </section>
+    </CollapsiblePanel>
   );
 }

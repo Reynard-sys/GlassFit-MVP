@@ -11,9 +11,10 @@ GlassFit is a photo-based visualization system for customized glass and aluminum
 3. Detect visible real-world objects and generate segmentation masks.
 4. Place a 3D product model into the uploaded photo.
 5. Move, resize, rotate, and adjust the 3D overlay.
-6. Toggle whether the 3D product appears behind detected objects.
-7. Match the 3D model lighting/color/quality to the uploaded photo.
-8. Generate and download the final composed visualization image.
+6. Place multiple product overlays in one photo session.
+7. Toggle whether each 3D product appears behind detected objects.
+8. Match the 3D model lighting/color/quality to the uploaded photo.
+9. Generate and download the final composed visualization image.
 
 The MVP intentionally does not include authentication, database storage, quotation, booking, admin tools, product catalogs, Messenger/Viber handoff, or full real-time AR.
 
@@ -32,12 +33,12 @@ FastAPI image analysis service
   v
 Next.js canvas editor
   |
-  | composites uploaded photo + 3D model + selected object cutouts
+  | composites uploaded photo + placed overlay layers + active 3D model + selected object cutouts
   v
 Final downloadable PNG
 ```
 
-The frontend handles the user experience, 3D rendering, canvas composition, object toggle behavior, and final export. The backend handles image analysis, brightness/ambience estimation, object segmentation, and mask generation.
+The frontend handles the user experience, 3D rendering, canvas composition, overlay layer state, object toggle behavior, and final export. The backend handles image analysis, brightness/ambience estimation, object segmentation, and mask generation.
 
 ## 3. Technologies Used
 
@@ -108,10 +109,11 @@ The frontend handles the user experience, 3D rendering, canvas composition, obje
 
 - **GLB / glTF**
   - The browser-ready 3D model format expected by the app.
-  - Target path:
+  - Target paths:
 
 ```text
 public/models/ikea-3-drawer.glb
+public/models/glass_window.glb
 ```
 
 ## 4. Main Files and Responsibilities
@@ -144,11 +146,17 @@ Main state coordinator. Handles:
 
 - selected uploaded image
 - backend analysis response
-- detected object toggles
-- selected 3D model path
-- overlay transform state
+- active editable overlay state
+- placed overlay layer state
+- selected overlay layer
 - output image state
 - warnings and errors
+
+```text
+src/components/CollapsiblePanel.tsx
+```
+
+Reusable collapsible panel shell used by the sidebar controls so upload, model selection, placed overlays, occlusion, and overlay adjustment sections can be opened or collapsed independently.
 
 ```text
 src/components/UploadPanel.tsx
@@ -167,16 +175,18 @@ Handles user image selection and displays:
 src/components/ObjectTogglePanel.tsx
 ```
 
-Displays detected objects. Each object has an independent toggle:
+Displays detected objects for the active overlay. Each object has an independent toggle:
 
 - ON means the object cutout renders above the 3D model.
 - OFF means the 3D model renders in front of that object.
+
+The toggle state is saved per overlay as `occlusionObjectIds`.
 
 ```text
 src/components/OverlayControls.tsx
 ```
 
-Controls the 3D overlay:
+Controls the active editable 3D overlay:
 
 - resize
 - rotate on photo
@@ -185,10 +195,36 @@ Controls the 3D overlay:
 - opacity
 - nudge left/up/right/down
 - reset
+- apply/place overlay
+- cancel active editing
+- duplicate active overlay
+- window glass view mode for window overlays
 - enable/disable ambient light adjustment
 - enable/disable realistic shadows
 - reset automatic shadow settings
 - generate output
+
+```text
+src/components/ProductModelPanel.tsx
+```
+
+Lists product model choices and starts a new active overlay:
+
+- cabinet
+- window
+
+```text
+src/components/PlacedOverlayPanel.tsx
+```
+
+Lists flattened placed overlays and exposes layer actions:
+
+- select
+- edit
+- duplicate
+- hide/show
+- delete
+- move up/down
 
 ```text
 src/components/CanvasEditor.tsx
@@ -197,12 +233,13 @@ src/components/CanvasEditor.tsx
 Core visual compositor. Handles:
 
 - uploaded image drawing
-- 3D model rendering/compositing
-- dragging the overlay on the canvas
+- placed overlay image layer drawing
+- active 3D model rendering/compositing
+- dragging only the active overlay on the canvas
 - applying ambient model matching
 - drawing directional cast shadows
 - drawing contact shadows
-- drawing original-image object cutouts above the model
+- drawing per-overlay original-image object cutouts above the model
 - exporting the final visualization as PNG
 
 ```text
@@ -221,8 +258,14 @@ Shared TypeScript interfaces:
 - `LightingAnalysis`
 - `DetectedObject`
 - `ImageAnalysisResponse`
+- `ProductModelType`
+- `ProductModelOption`
+- `GlassViewMode`
+- `WindowGlassSettings`
 - `OverlayTransform`
 - `ShadowSettings`
+- `PlacedOverlay`
+- `ActiveOverlayState`
 - `CanvasEditorHandle`
 
 ```text
@@ -256,11 +299,27 @@ src/lib/modelRenderer.ts
 Three.js model renderer. Handles:
 
 - loading `/models/ikea-3-drawer.glb`
+- loading `/models/glass_window.glb`
 - procedural 3D drawer fallback if the GLB is missing
+- procedural aluminum/glass window fallback if the window GLB is missing
 - normalizing model scale
 - setting camera and lights
 - relighting the model using photo-derived ambience
+- detecting and replacing window glass materials
+- adding a procedural glass fill plane when a window GLB has no detected glass mesh
+- generating an outdoor glass fallback texture when `/textures/outdoor-view.jpg` is missing
 - rendering the model into a transparent canvas
+
+```text
+src/lib/productModels.ts
+```
+
+Defines the available product models:
+
+- `cabinet` -> `/models/ikea-3-drawer.glb`
+- `window` -> `/models/glass_window.glb`
+
+It also provides helpers used to name new overlays, such as `Cabinet 1` and `Window 1`, and to initialize default window glass settings.
 
 ### Backend Files
 
@@ -382,18 +441,21 @@ blender --background "Ikea 3-Drawer.blend" --python scripts/export_blend_to_glb.
    - detector mode
    - ambient match info
    - detected objects
-7. User adjusts the 3D model:
+7. User adds a cabinet or window as the active editable overlay.
+8. User adjusts the active 3D model:
    - move
    - resize
    - rotate on photo
    - yaw
    - pitch
    - opacity
-8. User toggles object occlusion:
-   - enabled object masks restore original photo pixels above the model
-9. User clicks **Generate Output**.
-10. Canvas exports a final PNG.
-11. User downloads the final visualization.
+9. User toggles object occlusion for that active overlay:
+   - enabled object masks restore original photo pixels above that model
+10. User clicks **Apply Overlay** to flatten the active 3D render into a placed layer.
+11. User can add more models, edit placed overlays, duplicate overlays, hide/show layers, delete layers, and reorder layers.
+12. User clicks **Generate Output**.
+13. Canvas exports a final PNG with all visible placed overlays plus the active overlay if one is being edited.
+14. User downloads the final visualization.
 
 ## 6. API Contract
 
@@ -546,19 +608,27 @@ Use `YOLO_ALLOW_ALL_CLASSES=true` if you want to see all COCO detections.
 
 The selected object masks are not drawn as colored shapes.
 
-Instead, the app uses the mask to cut the object pixels from the original uploaded image, then draws those original pixels above the 3D model.
+Instead, the app uses the mask to cut the object pixels from the original uploaded image, then draws those original pixels above the relevant 3D model.
 
 Layering:
 
 ```text
 1. Full uploaded room photo
-2. Directional cast shadow
-3. Contact shadow
-4. 3D model render
-5. Original-image object cutouts for toggled objects
+2. For each visible placed overlay in layer order:
+   - directional cast shadow
+   - contact shadow
+   - flattened model render
+   - original-image object cutouts for that overlay's toggled objects
+3. Active editable overlay, if present:
+   - directional cast shadow
+   - contact shadow
+   - live Three.js model render
+   - original-image object cutouts for the active overlay
 ```
 
-This creates the illusion that the 3D product is behind selected real-world objects.
+This creates the illusion that each 3D product is behind selected real-world objects. Occlusion is now per overlay, so `Cabinet 1` can be behind a sofa while `Window 1` can use a different object mask or no mask at all.
+
+If two overlays use the same object mask, the cutout may be drawn more than once. That is acceptable for this MVP because it preserves the expected visual layering.
 
 ## 9. 3D Model Overlay
 
@@ -575,12 +645,13 @@ Therefore:
 - `.blend` is treated as the source file.
 - `.glb` is the browser runtime asset.
 - Three.js loads the GLB.
-- If the GLB is missing, the app uses a procedural 3D drawer fallback.
+- If a GLB is missing, the app uses a procedural 3D fallback.
 
-Expected model path:
+Expected model paths:
 
 ```text
 public/models/ikea-3-drawer.glb
+public/models/glass_window.glb
 ```
 
 Export command:
@@ -590,6 +661,42 @@ blender --background "Ikea 3-Drawer.blend" --python scripts/export_blend_to_glb.
 ```
 
 The procedural fallback is only for development continuity. The real project should use actual product GLB files.
+
+### Multiple Overlay Strategy
+
+The MVP uses a hybrid active-overlay plus flattened-layer approach:
+
+- Only one overlay is actively editable with a live Three.js renderer at a time.
+- Clicking **Apply Overlay** stores the current model render as a transparent flattened image layer.
+- The placed overlay also keeps its source settings: model type, model path, transform, shadows, ambient setting, and occlusion object IDs.
+- Placed overlays are previewed and exported from their flattened image layer instead of keeping many live WebGL model instances.
+
+This reduces GPU load, avoids multiple simultaneous Three.js renderers, and makes PNG export more reliable on mid-range devices.
+
+### Duplicate, Edit, Delete, Hide, and Reorder
+
+Placed overlays can be selected, edited, duplicated, hidden, deleted, and moved up or down in the layer order.
+
+Editing restores the saved overlay settings into the active editor and temporarily hides that placed layer to avoid a double image. Applying the edit replaces the placed layer's flattened render and saved settings. Canceling an edit leaves the original placed overlay unchanged.
+
+Duplicating a placed overlay opens the duplicate as the active editable overlay with a small offset. Duplicating the active overlay first stores the current overlay as a placed layer, then opens the offset copy as the active overlay.
+
+### Window Glass View Replacement
+
+Window overlays support a window-specific `Window Glass View` control with four modes:
+
+- `Transparent`: keeps the glass partially transparent, so the uploaded room photo can show through.
+- `Frosted / Empty`: uses a mostly opaque soft tint to hide background detail behind the pane.
+- `Outdoor View`: fills the pane with `/textures/outdoor-view.jpg` when present, or a generated sky/ground texture when the image is missing.
+- `Solid Tint`: fills the pane with a plain tint and blocks the uploaded photo behind it.
+
+This exists because the final output is a 2D canvas composite over the uploaded photo. Transparent glass naturally reveals the uploaded photo behind it, which is not always desirable for a window visualization. Frosted, outdoor, and solid modes make the pane visually block or replace that background area.
+
+The renderer tries to detect glass meshes by checking mesh, material, and parent names for glass-related terms such as `glass`, `pane`, `transparent`, and `glazing`. If the GLB does not expose a clearly named glass mesh, the renderer adds a procedural rectangular glass fill plane inside the window bounds. The procedural window fallback uses the same material system.
+
+Window glass settings are saved per overlay. This means `Window 1` can use Outdoor View while `Window 2` uses Frosted / Empty, and duplicated or edited windows preserve their own glass mode, opacity, and tint.
+
+Limitations: this is not physical refraction, true depth estimation, or real outdoor reconstruction. It is an MVP material replacement that improves the visual result for a photo-based canvas composite.
 
 ## 10. Ambient Light and Realism Matching
 
@@ -692,10 +799,12 @@ canvas.toDataURL("image/png")
 The exported image includes:
 
 - original uploaded photo
-- directional cast shadow
-- contact shadow
-- ambience-matched 3D model
-- enabled object cutouts
+- all visible placed overlays in layer order
+- each overlay's directional cast shadow
+- each overlay's contact shadow
+- each overlay's ambience-matched 3D model render
+- each overlay's enabled object cutouts
+- the active overlay if one is being edited
 
 The output is shown in the before/after panel and can be downloaded as:
 
@@ -713,6 +822,9 @@ The MVP handles:
 - missing segmentation
 - missing object masks
 - missing GLB model
+- missing window GLB model
+- editing conflicts when another active overlay has unsaved changes
+- exporting with no visible overlays
 - canvas export failure
 
 If the backend fails, the frontend allows manual overlay editing.
@@ -833,9 +945,15 @@ The lighting match is an image-based approximation from a single photo. It is no
 
 It is good enough for MVP feasibility but should be improved for production.
 
+### Multiple Overlay Editing
+
+Multiple overlays are supported through flattened canvas layers for reliability. Only one overlay is actively editable at a time. This is intentional: it keeps WebGL usage low, avoids many live Three.js renderers, and makes final PNG generation more predictable.
+
+Placed overlays can still be re-edited because the app saves their model type, transform, shadows, ambient setting, and per-overlay occlusion IDs.
+
 ### 3D Assets
 
-The app needs GLB files. Blender files must be exported first.
+The app needs GLB files. Blender files must be exported first. If `public/models/glass_window.glb` is not available, the frontend uses a procedural aluminum/glass window fallback.
 
 For production, each product should have:
 
@@ -982,11 +1100,12 @@ For the best demo results:
 
 1. Use a clear room photo with visible furniture.
 2. Avoid very dark or blurry photos.
-3. Place the 3D model near the floor or wall area.
-4. Toggle objects that should visually block the product.
-5. Use yaw/pitch to make the 3D model face the same direction as the room perspective.
-6. Keep opacity near 90-100 percent for solid products.
-7. Use ambience matching ON for the most realistic output.
+3. Add a cabinet or window and place it near the floor or wall area.
+4. Click **Apply Overlay** before adding a second product.
+5. Toggle objects that should visually block each product.
+6. Use yaw/pitch to make the 3D model face the same direction as the room perspective.
+7. Keep opacity near 90-100 percent for solid products.
+8. Use ambience matching ON for the most realistic output.
 
 ## 20. MVP Status Summary
 
@@ -999,21 +1118,35 @@ Completed:
 - YOLO segmentation
 - generated masks
 - object toggle panel
+- product model panel with cabinet and window choices
+- collapsible sidebar adjustment panels
 - 3D model rendering with Three.js
 - `.blend` to `.glb` export script
+- procedural window fallback
+- window glass view modes
+- window glass mesh detection and material replacement
+- procedural window glass fill fallback
+- procedural outdoor view texture fallback
 - model movement
 - model resize
 - model rotation
 - 3D yaw/pitch controls
+- active editable overlay state
+- multiple placed overlay layers
+- apply/place overlay workflow
+- edit placed overlay workflow
+- duplicate active and placed overlays
+- hide/show, delete, and reorder placed overlays
 - ambience-based relighting
 - ambience-based model color matching
 - automatic directional cast shadow
 - automatic contact shadow
 - manual shadow controls
-- object-aware occlusion
-- final PNG export
+- per-overlay object-aware occlusion
+- final PNG export with all visible overlays
 - before/after preview
 - download button
 - local development documentation
 
 This MVP is a strong feasibility prototype. For the real project, the biggest next steps are custom model assets, custom segmentation training, better perspective/depth estimation, and persistent project/product workflows.
+

@@ -9,7 +9,7 @@ import type {
 export const DEFAULT_OVERLAY_TRANSFORM: OverlayTransform = {
   x: 0,
   y: 0,
-  scale: 0.34,
+  scale: 0.26,
   rotation: 0,
   modelPitch: 8,
   modelYaw: -24,
@@ -130,7 +130,7 @@ export function getInitialOverlayTransform(
   return {
     x: canvasWidth * 0.52,
     y: canvasHeight * 0.57,
-    scale: 0.34,
+    scale: 0.26,
     rotation: 0,
     modelPitch: 8,
     modelYaw: -24,

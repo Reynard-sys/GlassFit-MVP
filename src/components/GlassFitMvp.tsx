@@ -1,60 +1,60 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CanvasEditor } from "@/components/CanvasEditor";
 import { ObjectTogglePanel } from "@/components/ObjectTogglePanel";
 import { OverlayControls } from "@/components/OverlayControls";
+import { PlacedOverlayPanel } from "@/components/PlacedOverlayPanel";
+import { ProductModelPanel } from "@/components/ProductModelPanel";
 import { ResultPreview } from "@/components/ResultPreview";
 import { UploadPanel } from "@/components/UploadPanel";
 import {
   DEFAULT_OVERLAY_TRANSFORM,
-  DEFAULT_SHADOW_SETTINGS,
   deriveShadowSettingsFromLighting,
+  getInitialOverlayTransform,
 } from "@/lib/canvasUtils";
 import { analyzeImage, getImageApiBaseUrl, validateImageFile } from "@/lib/imageApi";
+import {
+  getDefaultWindowGlassSettings,
+  getNextOverlayName,
+  getProductModelOption,
+  PRODUCT_MODEL_OPTIONS,
+} from "@/lib/productModels";
 import type {
+  ActiveOverlayState,
   CanvasEditorHandle,
   ImageAnalysisResponse,
   OverlayTransform,
+  PlacedOverlay,
+  ProductModelType,
   ShadowSettings,
+  WindowGlassSettings,
 } from "@/lib/types";
 
-const OVERLAY_OPTIONS = [
-  {
-    label: "Ikea 3-Drawer 3D Model",
-    src: "/models/ikea-3-drawer.glb",
-  },
-];
+interface CanvasSize {
+  width: number;
+  height: number;
+}
 
 export function GlassFitMvp() {
   const canvasRef = useRef<CanvasEditorHandle | null>(null);
+  const [activeOverlay, setActiveOverlay] = useState<ActiveOverlayState | null>(
+    null,
+  );
   const [analysis, setAnalysis] = useState<ImageAnalysisResponse | null>(null);
-  const [applyAmbientLight, setApplyAmbientLight] = useState(true);
+  const [canvasSize, setCanvasSize] = useState<CanvasSize | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [finalImageUrl, setFinalImageUrl] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [objectToggles, setObjectToggles] = useState<Record<string, boolean>>({});
-  const [modelSrc, setModelSrc] = useState(OVERLAY_OPTIONS[0].src);
-  const [overlayTransform, setOverlayTransform] = useState<OverlayTransform>(
-    DEFAULT_OVERLAY_TRANSFORM,
-  );
-  const [resetSignal, setResetSignal] = useState(0);
-  const [shadowSettings, setShadowSettings] = useState<ShadowSettings>(
-    DEFAULT_SHADOW_SETTINGS,
-  );
+  const [placedOverlays, setPlacedOverlays] = useState<PlacedOverlay[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
   const detectedObjects = analysis?.objects ?? [];
-  const enabledObjectIds = useMemo(
-    () =>
-      Object.entries(objectToggles)
-        .filter(([, enabled]) => enabled)
-        .map(([objectId]) => objectId),
-    [objectToggles],
-  );
+  const activeOcclusionObjectIds = activeOverlay?.occlusionObjectIds ?? [];
 
   useEffect(() => {
     return () => {
@@ -68,11 +68,40 @@ export function GlassFitMvp() {
     setWarning(message);
   }, []);
 
-  const resetShadowSettings = useCallback(() => {
-    setShadowSettings(
-      deriveShadowSettingsFromLighting(analysis?.lighting, analysis?.brightness),
+  const handleCanvasSizeChange = useCallback((size: CanvasSize | null) => {
+    setCanvasSize(size);
+  }, []);
+
+  const getDefaultTransform = useCallback((): OverlayTransform => {
+    if (!canvasSize) {
+      return { ...DEFAULT_OVERLAY_TRANSFORM };
+    }
+
+    return getInitialOverlayTransform(canvasSize.width, canvasSize.height);
+  }, [canvasSize]);
+
+  const getDefaultShadowSettings = useCallback(
+    () => deriveShadowSettingsFromLighting(analysis?.lighting, analysis?.brightness),
+    [analysis?.brightness, analysis?.lighting],
+  );
+
+  const confirmReplaceActiveOverlay = useCallback(() => {
+    if (!activeOverlay) {
+      return true;
+    }
+
+    const shouldDiscard = window.confirm(
+      "You have an active overlay. Discard unsaved changes and continue?",
     );
-  }, [analysis?.brightness, analysis?.lighting]);
+
+    if (!shouldDiscard) {
+      setWarning("Apply or cancel the active overlay before adding another.");
+      return false;
+    }
+
+    setActiveOverlay(null);
+    return true;
+  }, [activeOverlay]);
 
   async function handleFileSelect(file: File) {
     const validationError = validateImageFile(file);
@@ -85,23 +114,18 @@ export function GlassFitMvp() {
     setImageUrl(nextImageUrl);
     setFileName(file.name);
     setAnalysis(null);
+    setActiveOverlay(null);
+    setCanvasSize(null);
     setError(null);
     setFinalImageUrl(null);
-    setObjectToggles({});
+    setPlacedOverlays([]);
+    setSelectedOverlayId(null);
     setWarning(null);
     setIsAnalyzing(true);
 
     try {
       const result = await analyzeImage(file);
       setAnalysis(result);
-      setShadowSettings((current) =>
-        current.autoFromLighting
-          ? deriveShadowSettingsFromLighting(result.lighting, result.brightness)
-          : current,
-      );
-      setObjectToggles(
-        Object.fromEntries(result.objects.map((object) => [object.id, false])),
-      );
       setWarning(result.warning ?? null);
     } catch (caughtError) {
       const message =
@@ -117,11 +141,311 @@ export function GlassFitMvp() {
     }
   }
 
+  function handleAddModel(modelType: ProductModelType) {
+    if (!imageUrl) {
+      setError("Upload a space photo before adding a product model.");
+      return;
+    }
+
+    if (!confirmReplaceActiveOverlay()) {
+      return;
+    }
+
+    const option = getProductModelOption(modelType);
+    setActiveOverlay({
+      mode: "adding",
+      name: getNextOverlayName(modelType, placedOverlays),
+      modelType,
+      modelPath: option.modelPath,
+      transform: getDefaultTransform(),
+      shadowSettings: getDefaultShadowSettings(),
+      ambientEnabled: true,
+      occlusionObjectIds: [],
+      windowGlass:
+        modelType === "window" ? getDefaultWindowGlassSettings() : undefined,
+    });
+    setSelectedOverlayId(null);
+    setFinalImageUrl(null);
+    setError(null);
+  }
+
   function handleObjectToggle(objectId: string, enabled: boolean) {
-    setObjectToggles((current) => ({
-      ...current,
-      [objectId]: enabled,
-    }));
+    if (!activeOverlay) {
+      setWarning("Add or edit an overlay to configure object-aware occlusion.");
+      return;
+    }
+
+    setActiveOverlay((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const nextObjectIds = enabled
+        ? Array.from(new Set([...current.occlusionObjectIds, objectId]))
+        : current.occlusionObjectIds.filter((id) => id !== objectId);
+
+      return {
+        ...current,
+        occlusionObjectIds: nextObjectIds,
+      };
+    });
+  }
+
+  function handleResetActiveOverlay() {
+    setActiveOverlay((current) =>
+      current
+        ? {
+            ...current,
+            transform: getDefaultTransform(),
+          }
+        : current,
+    );
+  }
+
+  function handleResetShadowSettings() {
+    setActiveOverlay((current) =>
+      current
+        ? {
+            ...current,
+            shadowSettings: getDefaultShadowSettings(),
+          }
+        : current,
+    );
+  }
+
+  async function handleApplyOverlay() {
+    if (!activeOverlay) {
+      setWarning("Add or edit an overlay before applying it.");
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const flattenedImageDataUrl = await canvasRef.current?.flattenActiveOverlay();
+      if (!flattenedImageDataUrl) {
+        throw new Error("Overlay render failed.");
+      }
+
+      const now = Date.now();
+      if (activeOverlay.mode === "editing" && activeOverlay.overlayId) {
+        const existingOverlay = placedOverlays.find(
+          (overlay) => overlay.id === activeOverlay.overlayId,
+        );
+        const updatedOverlay = createPlacedOverlayFromActive(
+          activeOverlay,
+          activeOverlay.overlayId,
+          flattenedImageDataUrl,
+          now,
+          existingOverlay,
+        );
+
+        setPlacedOverlays((current) =>
+          current.map((overlay) =>
+            overlay.id === activeOverlay.overlayId ? updatedOverlay : overlay,
+          ),
+        );
+        setSelectedOverlayId(activeOverlay.overlayId);
+      } else {
+        const overlayId = createOverlayId();
+        const placedOverlay = createPlacedOverlayFromActive(
+          activeOverlay,
+          overlayId,
+          flattenedImageDataUrl,
+          now,
+        );
+
+        setPlacedOverlays((current) => [...current, placedOverlay]);
+        setSelectedOverlayId(overlayId);
+      }
+
+      setActiveOverlay(null);
+      setFinalImageUrl(null);
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Failed to apply overlay.";
+      setError(message);
+    }
+  }
+
+  function handleCancelOverlay() {
+    if (activeOverlay?.mode === "editing" && activeOverlay.overlayId) {
+      setSelectedOverlayId(activeOverlay.overlayId);
+    }
+
+    setActiveOverlay(null);
+  }
+
+  async function handleDuplicateActiveOverlay() {
+    if (!activeOverlay) {
+      setWarning("Add or edit an overlay before duplicating it.");
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const flattenedImageDataUrl = await canvasRef.current?.flattenActiveOverlay();
+      if (!flattenedImageDataUrl) {
+        throw new Error("Overlay render failed.");
+      }
+
+      const now = Date.now();
+      const sourceOverlayId = activeOverlay.overlayId ?? createOverlayId();
+      const existingOverlay = placedOverlays.find(
+        (overlay) => overlay.id === sourceOverlayId,
+      );
+      const sourceOverlay = createPlacedOverlayFromActive(
+        activeOverlay,
+        sourceOverlayId,
+        flattenedImageDataUrl,
+        now,
+        existingOverlay,
+      );
+      const sourceExists = placedOverlays.some(
+        (overlay) => overlay.id === sourceOverlayId,
+      );
+      const projectedOverlays = sourceExists
+        ? placedOverlays.map((overlay) =>
+            overlay.id === sourceOverlayId ? sourceOverlay : overlay,
+          )
+        : [...placedOverlays, sourceOverlay];
+
+      setPlacedOverlays(projectedOverlays);
+      setSelectedOverlayId(sourceOverlayId);
+      setActiveOverlay({
+        mode: "adding",
+        name: getNextOverlayName(activeOverlay.modelType, projectedOverlays),
+        modelType: activeOverlay.modelType,
+        modelPath: activeOverlay.modelPath,
+        transform: offsetTransform(activeOverlay.transform),
+        shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
+        ambientEnabled: activeOverlay.ambientEnabled,
+        occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
+        windowGlass: getWindowGlassForModel(
+          activeOverlay.modelType,
+          activeOverlay.windowGlass,
+        ),
+      });
+      setFinalImageUrl(null);
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Failed to duplicate overlay.";
+      setError(message);
+    }
+  }
+
+  function handleEditPlacedOverlay(overlayId: string) {
+    if (!confirmReplaceActiveOverlay()) {
+      return;
+    }
+
+    const overlay = placedOverlays.find((entry) => entry.id === overlayId);
+    if (!overlay) {
+      setWarning("The selected overlay could not be found.");
+      return;
+    }
+
+    setActiveOverlay({
+      mode: "editing",
+      overlayId: overlay.id,
+      name: overlay.name,
+      modelType: overlay.modelType,
+      modelPath: overlay.modelPath,
+      transform: cloneTransform(overlay.transform),
+      shadowSettings: cloneShadowSettings(overlay.shadowSettings),
+      ambientEnabled: overlay.ambientEnabled,
+      occlusionObjectIds: [...overlay.occlusionObjectIds],
+      windowGlass:
+        getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
+    });
+    setSelectedOverlayId(overlay.id);
+    setFinalImageUrl(null);
+  }
+
+  function handleDuplicatePlacedOverlay(overlayId: string) {
+    if (!confirmReplaceActiveOverlay()) {
+      return;
+    }
+
+    const overlay = placedOverlays.find((entry) => entry.id === overlayId);
+    if (!overlay) {
+      setWarning("The selected overlay could not be found.");
+      return;
+    }
+
+    setActiveOverlay({
+      mode: "adding",
+      name: getNextOverlayName(overlay.modelType, placedOverlays),
+      modelType: overlay.modelType,
+      modelPath: overlay.modelPath,
+      transform: offsetTransform(overlay.transform),
+      shadowSettings: cloneShadowSettings(overlay.shadowSettings),
+      ambientEnabled: overlay.ambientEnabled,
+      occlusionObjectIds: [...overlay.occlusionObjectIds],
+      windowGlass:
+        getWindowGlassForModel(overlay.modelType, overlay.windowGlass),
+    });
+    setSelectedOverlayId(overlay.id);
+    setFinalImageUrl(null);
+  }
+
+  function handleDeletePlacedOverlay(overlayId: string) {
+    setPlacedOverlays((current) =>
+      current.filter((overlay) => overlay.id !== overlayId),
+    );
+
+    if (selectedOverlayId === overlayId) {
+      setSelectedOverlayId(null);
+    }
+
+    if (activeOverlay?.overlayId === overlayId) {
+      setActiveOverlay(null);
+    }
+
+    setFinalImageUrl(null);
+  }
+
+  function handleToggleOverlayVisible(overlayId: string, visible: boolean) {
+    setPlacedOverlays((current) =>
+      current.map((overlay) =>
+        overlay.id === overlayId
+          ? {
+              ...overlay,
+              visible,
+              updatedAt: Date.now(),
+            }
+          : overlay,
+      ),
+    );
+    setFinalImageUrl(null);
+  }
+
+  function handleMoveOverlay(overlayId: string, direction: "up" | "down") {
+    setPlacedOverlays((current) => {
+      const index = current.findIndex((overlay) => overlay.id === overlayId);
+      const targetIndex = direction === "up" ? index + 1 : index - 1;
+
+      if (
+        index < 0 ||
+        targetIndex < 0 ||
+        targetIndex >= current.length
+      ) {
+        return current;
+      }
+
+      const nextOverlays = [...current];
+      [nextOverlays[index], nextOverlays[targetIndex]] = [
+        nextOverlays[targetIndex],
+        nextOverlays[index],
+      ];
+      return nextOverlays;
+    });
+    setFinalImageUrl(null);
   }
 
   async function handleGenerateOutput() {
@@ -138,7 +462,13 @@ export function GlassFitMvp() {
       if (!output) {
         throw new Error("Canvas export failed.");
       }
+
       setFinalImageUrl(output);
+      if (activeOverlay) {
+        setWarning("The active overlay is included in the generated output.");
+      } else if (!placedOverlays.some((overlay) => overlay.visible)) {
+        setWarning("Generated output contains the uploaded photo because no overlays are visible.");
+      }
     } catch (caughtError) {
       const message =
         caughtError instanceof Error
@@ -163,11 +493,10 @@ export function GlassFitMvp() {
             </h1>
           </div>
           <p className="max-w-3xl text-sm leading-6 text-stone-600">
-            This MVP is a feasibility prototype. Object detection, masking, and
-            lighting adjustment are intended for visual support only and may not
-            produce perfect depth, scale, or photorealistic accuracy. Shadow and
-            lighting are estimated from a single photo and are intended for
-            realism support only.
+            This MVP supports multiple placed overlays using flattened canvas
+            layers for reliability. Only one overlay is actively editable at a
+            time. Lighting, shadow, scale, and occlusion are visual
+            approximations based on a single uploaded photo.
           </p>
         </header>
 
@@ -187,58 +516,57 @@ export function GlassFitMvp() {
               onFileSelect={handleFileSelect}
             />
 
-            <section className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
-              <label className="block text-base font-semibold text-stone-950">
-                3D Product Model
-                <select
-                  className="mt-3 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-800 outline-none transition focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
-                  onChange={(event) => setModelSrc(event.target.value)}
-                  value={modelSrc}
-                >
-                  {OVERLAY_OPTIONS.map((overlay) => (
-                    <option key={overlay.src} value={overlay.src}>
-                      {overlay.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </section>
+            <ProductModelPanel
+              disabled={!imageUrl || !canvasSize}
+              onAddModel={handleAddModel}
+              options={PRODUCT_MODEL_OPTIONS}
+            />
+
+            <PlacedOverlayPanel
+              activeOverlay={activeOverlay}
+              overlays={placedOverlays}
+              selectedOverlayId={selectedOverlayId}
+              onDelete={handleDeletePlacedOverlay}
+              onDuplicate={handleDuplicatePlacedOverlay}
+              onEdit={handleEditPlacedOverlay}
+              onMove={handleMoveOverlay}
+              onSelect={setSelectedOverlayId}
+              onToggleVisible={handleToggleOverlayVisible}
+            />
 
             <ObjectTogglePanel
-              enabledObjectIds={enabledObjectIds}
+              activeOverlayName={activeOverlay?.name}
+              enabledObjectIds={activeOcclusionObjectIds}
+              hasActiveOverlay={Boolean(activeOverlay)}
               objects={detectedObjects}
               onToggle={handleObjectToggle}
             />
 
             <OverlayControls
-              applyAmbientLight={applyAmbientLight}
+              activeOverlay={activeOverlay}
               isGenerating={isGenerating}
+              onApplyOverlay={handleApplyOverlay}
+              onCancelOverlay={handleCancelOverlay}
+              onDuplicateActiveOverlay={handleDuplicateActiveOverlay}
               onGenerate={handleGenerateOutput}
-              onReset={() => setResetSignal((current) => current + 1)}
-              onResetShadow={resetShadowSettings}
-              setShadowSettings={setShadowSettings}
-              onToggleAmbientLight={setApplyAmbientLight}
-              shadowSettings={shadowSettings}
-              setTransform={setOverlayTransform}
-              transform={overlayTransform}
+              onReset={handleResetActiveOverlay}
+              onResetShadow={handleResetShadowSettings}
+              setActiveOverlay={setActiveOverlay}
             />
           </aside>
 
           <div className="space-y-5">
             <CanvasEditor
-              applyAmbientLight={applyAmbientLight}
+              activeOverlay={activeOverlay}
               backgroundUrl={imageUrl}
               brightnessCategory={analysis?.brightness.category}
               lighting={analysis?.lighting}
               objects={detectedObjects}
-              occludedObjectIds={enabledObjectIds}
+              onCanvasSizeChange={handleCanvasSizeChange}
               onWarning={handleWarning}
-              modelSrc={modelSrc}
+              placedOverlays={placedOverlays}
               ref={canvasRef}
-              resetSignal={resetSignal}
-              shadowSettings={shadowSettings}
-              setTransform={setOverlayTransform}
-              transform={overlayTransform}
+              setActiveOverlay={setActiveOverlay}
             />
 
             <ResultPreview
@@ -250,4 +578,69 @@ export function GlassFitMvp() {
       </div>
     </main>
   );
+}
+
+function createPlacedOverlayFromActive(
+  activeOverlay: ActiveOverlayState,
+  overlayId: string,
+  flattenedImageDataUrl: string,
+  timestamp: number,
+  existingOverlay?: PlacedOverlay,
+): PlacedOverlay {
+  return {
+    id: overlayId,
+    name: activeOverlay.name,
+    modelType: activeOverlay.modelType,
+    modelPath: activeOverlay.modelPath,
+    transform: cloneTransform(activeOverlay.transform),
+    shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
+    occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
+    ambientEnabled: activeOverlay.ambientEnabled,
+    windowGlass: getWindowGlassForModel(
+      activeOverlay.modelType,
+      activeOverlay.windowGlass,
+    ),
+    visible: existingOverlay?.visible ?? true,
+    locked: existingOverlay?.locked,
+    flattenedImageDataUrl,
+    createdAt: existingOverlay?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function createOverlayId() {
+  return `overlay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cloneTransform(transform: OverlayTransform): OverlayTransform {
+  return { ...transform };
+}
+
+function cloneShadowSettings(shadowSettings: ShadowSettings): ShadowSettings {
+  return { ...shadowSettings };
+}
+
+function cloneWindowGlassSettings(
+  windowGlass: WindowGlassSettings,
+): WindowGlassSettings {
+  return { ...windowGlass };
+}
+
+function getWindowGlassForModel(
+  modelType: ProductModelType,
+  windowGlass: WindowGlassSettings | undefined,
+) {
+  if (modelType !== "window") {
+    return undefined;
+  }
+
+  return cloneWindowGlassSettings(windowGlass ?? getDefaultWindowGlassSettings());
+}
+
+function offsetTransform(transform: OverlayTransform): OverlayTransform {
+  return {
+    ...transform,
+    x: transform.x + 40,
+    y: transform.y + 40,
+  };
 }

@@ -55,6 +55,24 @@ export interface ObjectToggleState {
   enabled: boolean;
 }
 
+export type ProductModelType = "cabinet" | "window";
+
+export interface ProductModelOption {
+  id: ProductModelType;
+  name: string;
+  modelPath: string;
+  fallback: "drawer" | "window";
+}
+
+export type GlassViewMode = "transparent" | "frosted" | "outdoor" | "solid";
+
+export interface WindowGlassSettings {
+  mode: GlassViewMode;
+  opacity: number;
+  tintColor: string;
+  outdoorTexturePath?: string;
+}
+
 export interface OverlayTransform {
   x: number;
   y: number;
@@ -79,6 +97,37 @@ export interface ShadowSettings {
   autoFromLighting: boolean;
 }
 
+export interface PlacedOverlay {
+  id: string;
+  name: string;
+  modelType: ProductModelType;
+  modelPath: string;
+  transform: OverlayTransform;
+  shadowSettings: ShadowSettings;
+  occlusionObjectIds: string[];
+  ambientEnabled: boolean;
+  visible: boolean;
+  windowGlass?: WindowGlassSettings;
+  locked?: boolean;
+  flattenedImageDataUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ActiveOverlayState {
+  mode: "adding" | "editing";
+  overlayId?: string;
+  name: string;
+  modelType: ProductModelType;
+  modelPath: string;
+  transform: OverlayTransform;
+  shadowSettings: ShadowSettings;
+  ambientEnabled: boolean;
+  occlusionObjectIds: string[];
+  windowGlass?: WindowGlassSettings;
+}
+
 export interface CanvasEditorHandle {
   exportImage: () => Promise<string>;
+  flattenActiveOverlay: () => Promise<string>;
 }
