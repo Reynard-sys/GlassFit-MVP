@@ -15,6 +15,7 @@ import {
 import {
   analyzeLocalImageRegion,
   applyBoxModelFaceShading,
+  applyCabinetMaterialVitality,
   applyCameraMatchToOverlayCanvas,
   applySpatialRelightingToOverlayCanvas,
   buildSpatialLightingMap,
@@ -698,6 +699,7 @@ function drawOverlayLayer(
   const localAdjustments = ambientEnabled && localAmbient?.enabled
     ? localAmbient.adjustments
     : undefined;
+  const autoRealismEnabled = Boolean(autoRealism?.enabled);
 
   drawSceneShadows(
     context,
@@ -709,6 +711,7 @@ function drawOverlayLayer(
     localAdjustments?.shadowOpacityMultiplier,
     effectiveGroundingRealism,
     modelType,
+    autoRealismEnabled,
   );
 
   drawModelOverlay(
@@ -716,7 +719,9 @@ function drawOverlayLayer(
     modelSource,
     drawTransform,
     metrics,
-    getAmbientCanvasFilter(brightnessCategory, lighting, ambientEnabled),
+    autoRealismEnabled
+      ? "none"
+      : getAmbientCanvasFilter(brightnessCategory, lighting, ambientEnabled),
     ambientEnabled ? lighting : undefined,
     getAmbientMatchStrength(windowGlass),
     localAdjustments,
@@ -910,6 +915,7 @@ function drawSceneShadows(
   shadowOpacityMultiplier = 1,
   groundingRealism: GroundingRealismSettings | undefined,
   modelType: PlacedOverlay["modelType"],
+  autoRealismEnabled: boolean,
 ) {
   if (!shadowSettings.enabled) {
     return;
@@ -926,16 +932,18 @@ function drawSceneShadows(
     );
   }
 
-  drawGroundingContactShadows(
-    context,
-    transform,
-    metrics,
-    groundingRealism,
-    modelType,
-    shadowOpacityMultiplier,
-  );
+  if (!autoRealismEnabled) {
+    drawGroundingContactShadows(
+      context,
+      transform,
+      metrics,
+      groundingRealism,
+      modelType,
+      shadowOpacityMultiplier,
+    );
+  }
 
-  if (shadowSettings.contactEnabled) {
+  if (shadowSettings.contactEnabled && !autoRealismEnabled) {
     drawContactShadow(
       context,
       transform,
@@ -1414,17 +1422,39 @@ function createAmbientMatchedModelCanvas(
   const ambientAverage = ambient
     ? (ambient[0] + ambient[1] + ambient[2]) / 3 || 128
     : 128;
-  const colorMix = (lighting?.suggested.color_mix ?? 0) * ambientMatchStrength;
+  const autoRealismEnabled = Boolean(autoRealism?.enabled);
+  const colorMix =
+    (lighting?.suggested.color_mix ?? 0) *
+    ambientMatchStrength *
+    (autoRealismEnabled ? 0.55 : 1);
   const grainStrength = (lighting?.suggested.grain ?? 0) * 28 * ambientMatchStrength;
-  const contrast = lighting?.suggested.contrast ?? 1;
-  const saturation = lighting?.suggested.saturation ?? 1;
+  const contrast = getGlobalAmbientContrast(lighting, autoRealismEnabled);
+  const saturation = getGlobalAmbientSaturation(lighting, autoRealismEnabled);
   const brightness = lighting
-    ? 1 + (lighting.suggested.brightness - 1) * ambientMatchStrength
+    ? getGlobalAmbientBrightness(lighting, ambientMatchStrength, autoRealismEnabled)
     : 1;
   const localAmbientAverage = localAdjustments
     ? averageRgb(localAdjustments.color) || 128
     : 128;
   const localGrainStrength = (localAdjustments?.grain ?? 0) * 22;
+  const localBrightness = localAdjustments
+    ? autoRealismEnabled
+      ? clampNumber(localAdjustments.brightness, 0.9, 1.22)
+      : localAdjustments.brightness
+    : 1;
+  const localContrast = localAdjustments
+    ? autoRealismEnabled
+      ? Math.max(localAdjustments.contrast, 0.94)
+      : localAdjustments.contrast
+    : 1;
+  const localSaturation = localAdjustments
+    ? autoRealismEnabled
+      ? Math.max(localAdjustments.saturation, 0.98)
+      : localAdjustments.saturation
+    : 1;
+  const localColorMix = localAdjustments
+    ? localAdjustments.colorMix * (autoRealismEnabled ? 0.7 : 1)
+    : 0;
 
   for (let index = 0; index < data.length; index += 4) {
     const alpha = data[index + 3] / 255;
@@ -1452,28 +1482,28 @@ function createAmbientMatchedModelCanvas(
     }
 
     if (localAdjustments) {
-      red *= localAdjustments.brightness;
-      green *= localAdjustments.brightness;
-      blue *= localAdjustments.brightness;
+      red *= localBrightness;
+      green *= localBrightness;
+      blue *= localBrightness;
 
       const localLuma = red * 0.2126 + green * 0.7152 + blue * 0.0722;
-      red = localLuma + (red - localLuma) * localAdjustments.saturation;
-      green = localLuma + (green - localLuma) * localAdjustments.saturation;
-      blue = localLuma + (blue - localLuma) * localAdjustments.saturation;
+      red = localLuma + (red - localLuma) * localSaturation;
+      green = localLuma + (green - localLuma) * localSaturation;
+      blue = localLuma + (blue - localLuma) * localSaturation;
 
-      red = (red - 128) * localAdjustments.contrast + 128;
-      green = (green - 128) * localAdjustments.contrast + 128;
-      blue = (blue - 128) * localAdjustments.contrast + 128;
+      red = (red - 128) * localContrast + 128;
+      green = (green - 128) * localContrast + 128;
+      blue = (blue - 128) * localContrast + 128;
 
       red =
-        red * (1 - localAdjustments.colorMix) +
-        red * (localAdjustments.color[0] / localAmbientAverage) * localAdjustments.colorMix;
+        red * (1 - localColorMix) +
+        red * (localAdjustments.color[0] / localAmbientAverage) * localColorMix;
       green =
-        green * (1 - localAdjustments.colorMix) +
-        green * (localAdjustments.color[1] / localAmbientAverage) * localAdjustments.colorMix;
+        green * (1 - localColorMix) +
+        green * (localAdjustments.color[1] / localAmbientAverage) * localColorMix;
       blue =
-        blue * (1 - localAdjustments.colorMix) +
-        blue * (localAdjustments.color[2] / localAmbientAverage) * localAdjustments.colorMix;
+        blue * (1 - localColorMix) +
+        blue * (localAdjustments.color[2] / localAmbientAverage) * localColorMix;
     }
 
     const grain = (pseudoRandom(index) - 0.5) * (grainStrength + localGrainStrength);
@@ -1511,6 +1541,10 @@ function createAmbientMatchedModelCanvas(
       modelType,
       autoRealismResult.faceShadingStrength,
     );
+  }
+
+  if (autoRealism?.enabled) {
+    processedCanvas = applyCabinetMaterialVitality(processedCanvas, modelType);
   }
 
   return applyCameraMatchForOverlay(
@@ -1606,7 +1640,7 @@ function getEffectiveGroundingRealism(
     },
     groundingShadow: {
       ...base.groundingShadow,
-      enabled: autoRealism.autoGroundingShadow,
+      enabled: false,
       baseContactStrength: autoRealismResult.contactShadowStrength,
       legContactStrength: autoRealismResult.legShadowStrength,
       contactBlur: autoRealismResult.shadowSoftness,
@@ -1616,11 +1650,13 @@ function getEffectiveGroundingRealism(
     cameraMatch: {
       ...base.cameraMatch,
       enabled: autoRealism.autoCameraMatch || autoRealism.autoEdgeBlend,
-      blurPx: autoRealism.autoCameraMatch ? autoRealismResult.cameraBlurPx : 0,
+      blurPx: autoRealism.autoCameraMatch
+        ? Math.min(autoRealismResult.cameraBlurPx * 0.45, 0.35)
+        : 0,
       grainAmount: autoRealism.autoCameraMatch ? autoRealismResult.grainAmount : 0,
       edgeFeatherPx: autoRealism.autoEdgeBlend ? autoRealismResult.edgeFeatherPx : 0,
       compressionSoftness: autoRealism.autoCameraMatch
-        ? clampNumber(autoRealismResult.cameraBlurPx * 0.08, 0.04, 0.12)
+        ? clampNumber(autoRealismResult.cameraBlurPx * 0.04, 0.02, 0.06)
         : 0,
     },
   };
@@ -1833,6 +1869,51 @@ function createModelOutlineCanvas(
 
 function getAmbientMatchStrength(windowGlass: WindowGlassSettings | undefined) {
   return windowGlass?.mode === "outdoor" ? 0.35 : 1;
+}
+
+function getGlobalAmbientBrightness(
+  lighting: LightingAnalysis,
+  ambientMatchStrength: number,
+  autoRealismEnabled: boolean,
+) {
+  const matchedBrightness =
+    1 + (lighting.suggested.brightness - 1) * ambientMatchStrength;
+
+  if (!autoRealismEnabled) {
+    return matchedBrightness;
+  }
+
+  return clampNumber(
+    1 + (lighting.suggested.brightness - 1) * ambientMatchStrength * 0.72 + 0.035,
+    0.9,
+    1.2,
+  );
+}
+
+function getGlobalAmbientContrast(
+  lighting: LightingAnalysis | undefined,
+  autoRealismEnabled: boolean,
+) {
+  const suggestedContrast = lighting?.suggested.contrast ?? 1;
+
+  if (!autoRealismEnabled) {
+    return suggestedContrast;
+  }
+
+  return clampNumber(1 + (suggestedContrast - 1) * 0.55 + 0.08, 0.98, 1.18);
+}
+
+function getGlobalAmbientSaturation(
+  lighting: LightingAnalysis | undefined,
+  autoRealismEnabled: boolean,
+) {
+  const suggestedSaturation = lighting?.suggested.saturation ?? 1;
+
+  if (!autoRealismEnabled) {
+    return suggestedSaturation;
+  }
+
+  return clampNumber(1 + (suggestedSaturation - 1) * 0.55 + 0.1, 0.98, 1.22);
 }
 
 function getCanvasPoint(

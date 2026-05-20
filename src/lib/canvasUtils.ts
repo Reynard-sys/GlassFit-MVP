@@ -59,8 +59,8 @@ export const DEFAULT_SHADOW_SETTINGS: ShadowSettings = {
 
 export const DEFAULT_SPATIAL_RELIGHT_SETTINGS: SpatialRelightSettings = {
   enabled: true,
-  intensity: 0.35,
-  colorInfluence: 0.12,
+  intensity: 0.3,
+  colorInfluence: 0.08,
   directionalInfluence: 0.2,
   gridSize: 5,
 };
@@ -104,7 +104,7 @@ export const DEFAULT_AUTO_REALISM_SETTINGS: AutoRealismSettings = {
   placementType: "floor-standing",
   autoPerspective: true,
   autoCameraMatch: true,
-  autoGroundingShadow: true,
+  autoGroundingShadow: false,
   autoEdgeBlend: true,
   autoFaceShading: true,
 };
@@ -379,9 +379,9 @@ export function deriveAutoRealismSettings({
     globalLighting?.noise ??
     globalLighting?.suggested.grain ??
     0.04;
-  const sharpness = imageSharpness ?? globalLighting?.sharpness ?? 120;
+  const sharpness = imageSharpness ?? globalLighting?.sharpness ?? 0.9;
   const suggestedBlur = globalLighting?.suggested.blur_px ?? 0.25;
-  const normalizedSharpness = clamp(sharpness / 180, 0, 1);
+  const normalizedSharpness = clamp(sharpness / 1.5, 0, 1);
   const softnessFromSharpness = 1 - normalizedSharpness;
   const overlayCenterX = overlayBounds
     ? overlayBounds.x + overlayBounds.width / 2
@@ -423,23 +423,23 @@ export function deriveAutoRealismSettings({
     0.08,
   );
   const cameraBlurPx = clamp(
-    0.22 + suggestedBlur * 0.4 + softnessFromSharpness * 0.55 + (1 - contrast) * 0.18,
-    0.2,
-    1.2,
+    0.14 + suggestedBlur * 0.24 + softnessFromSharpness * 0.38 + (1 - contrast) * 0.12,
+    0.12,
+    0.85,
   );
   const grainAmount = clamp(
-    0.025 + noise * 0.18 + (globalLighting?.suggested.grain ?? 0) * 0.3,
-    0.02,
-    0.1,
+    0.018 + noise * 0.12 + (globalLighting?.suggested.grain ?? 0) * 0.2,
+    0.015,
+    0.075,
   );
   const edgeFeatherPx = clamp(
-    0.42 + cameraBlurPx * 0.45 + noise * 0.25,
-    0.4,
-    1.4,
+    0.32 + cameraBlurPx * 0.32 + noise * 0.18,
+    0.28,
+    1,
   );
   const faceShadingStrength =
     modelType === "cabinet"
-      ? clamp(0.16 + lowerImageFactor * 0.08 + (contrast - 1) * 0.08, 0.12, 0.32)
+      ? clamp(0.16 + lowerImageFactor * 0.07 + (contrast - 1) * 0.06, 0.14, 0.32)
       : clamp(0.06 + (contrast - 1) * 0.04, 0.03, 0.12);
   const notes: string[] = [];
 
@@ -630,11 +630,11 @@ export function applySpatialRelightingToOverlayCanvas(
     modelType === "window" && windowGlass?.mode === "outdoor";
   const transparentWindow =
     modelType === "window" && windowGlass?.mode === "transparent";
-  const brightnessMin = outdoorWindow ? 0.88 : transparentWindow ? 0.86 : 0.82;
-  const brightnessMax = outdoorWindow ? 1.12 : transparentWindow ? 1.14 : 1.18;
+  const brightnessMin = outdoorWindow ? 0.92 : transparentWindow ? 0.9 : 0.88;
+  const brightnessMax = outdoorWindow ? 1.14 : transparentWindow ? 1.17 : 1.22;
   const colorInfluence = outdoorWindow
-    ? settings.colorInfluence * 0.5
-    : settings.colorInfluence;
+    ? settings.colorInfluence * 0.4
+    : settings.colorInfluence * 0.75;
   const baseIntensity =
     Number.isFinite(lightingMap.globalMeanIntensity)
       ? lightingMap.globalMeanIntensity
@@ -671,8 +671,8 @@ export function applySpatialRelightingToOverlayCanvas(
         centeredX * lightDirection.x + centeredY * lightDirection.y;
       const directionalAdjustment = clamp(
         1 + directionalFactor * settings.directionalInfluence * 0.15,
-        0.9,
-        1.1,
+        0.94,
+        1.12,
       );
       const finalBrightness = brightnessMultiplier * directionalAdjustment;
 
@@ -745,15 +745,102 @@ export function applyBoxModelFaceShading(
       const undersideShade = normalizedY > 0.86 ? (normalizedY - 0.86) / 0.14 : 0;
       const brightness =
         1 +
-        topLift * clampedStrength * 0.18 -
-        lowerShade * clampedStrength * 0.18 -
-        sideShade * clampedStrength * 0.14 -
-        undersideShade * clampedStrength * 0.22;
-      const contrast = 1 + clampedStrength * 0.08;
+        topLift * clampedStrength * 0.3 -
+        lowerShade * clampedStrength * 0.12 -
+        sideShade * clampedStrength * 0.18 -
+        undersideShade * clampedStrength * 0.18;
+      const contrast = 1 + clampedStrength * 0.12;
 
       data[index] = clampChannel((data[index] * brightness - 128) * contrast + 128);
       data[index + 1] = clampChannel((data[index + 1] * brightness - 128) * contrast + 128);
       data[index + 2] = clampChannel((data[index + 2] * brightness - 128) * contrast + 128);
+    }
+  }
+
+  outputContext.putImageData(imageData, 0, 0);
+
+  return outputCanvas;
+}
+
+export function applyCabinetMaterialVitality(
+  modelCanvas: HTMLCanvasElement,
+  modelType: ProductModelType,
+): HTMLCanvasElement {
+  if (modelType !== "cabinet") {
+    return modelCanvas;
+  }
+
+  const outputCanvas = document.createElement("canvas");
+  outputCanvas.width = modelCanvas.width;
+  outputCanvas.height = modelCanvas.height;
+
+  const outputContext = outputCanvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+  if (!outputContext) {
+    return modelCanvas;
+  }
+
+  outputContext.drawImage(modelCanvas, 0, 0);
+
+  const imageData = outputContext.getImageData(
+    0,
+    0,
+    outputCanvas.width,
+    outputCanvas.height,
+  );
+  const data = imageData.data;
+
+  for (let y = 0; y < outputCanvas.height; y += 1) {
+    const normalizedY = outputCanvas.height <= 1 ? 0.5 : y / (outputCanvas.height - 1);
+
+    for (let x = 0; x < outputCanvas.width; x += 1) {
+      const index = (y * outputCanvas.width + x) * 4;
+      const alpha = data[index + 3] / 255;
+      if (alpha <= 0.01) {
+        continue;
+      }
+
+      const red = data[index];
+      const green = data[index + 1];
+      const blue = data[index + 2];
+      const luma = getLuminance(red, green, blue);
+
+      if (luma < 44) {
+        data[index] = clampChannel((red - 18) * 1.08 + 18);
+        data[index + 1] = clampChannel((green - 18) * 1.08 + 18);
+        data[index + 2] = clampChannel((blue - 18) * 1.08 + 18);
+        continue;
+      }
+
+      const normalizedX = outputCanvas.width <= 1 ? 0.5 : x / (outputCanvas.width - 1);
+      const topHighlight = normalizedY < 0.34 ? (0.34 - normalizedY) / 0.34 : 0;
+      const frontLift = normalizedY > 0.28 && normalizedY < 0.74 ? 1 : 0;
+      const sideRollOff = Math.abs(normalizedX - 0.5) * 2;
+      const rightFaceShade = normalizedX > 0.62 ? (normalizedX - 0.62) / 0.38 : 0;
+      const lowerDepth = normalizedY > 0.62 ? (normalizedY - 0.62) / 0.38 : 0;
+      const materialLift =
+        1.06 +
+        topHighlight * 0.11 +
+        frontLift * 0.035 -
+        sideRollOff * 0.035 -
+        rightFaceShade * 0.045 -
+        lowerDepth * 0.025;
+      const clarity = 1.14;
+      const saturation = 1.06;
+
+      let nextRed = (red * materialLift - 128) * clarity + 128;
+      let nextGreen = (green * materialLift - 128) * clarity + 128;
+      let nextBlue = (blue * materialLift - 128) * clarity + 128;
+      const nextLuma = getLuminance(nextRed, nextGreen, nextBlue);
+
+      nextRed = nextLuma + (nextRed - nextLuma) * saturation;
+      nextGreen = nextLuma + (nextGreen - nextLuma) * saturation;
+      nextBlue = nextLuma + (nextBlue - nextLuma) * saturation;
+
+      data[index] = clampChannel(nextRed + 4);
+      data[index + 1] = clampChannel(nextGreen + 3);
+      data[index + 2] = clampChannel(nextBlue + 1);
     }
   }
 

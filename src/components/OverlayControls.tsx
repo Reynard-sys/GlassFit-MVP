@@ -332,7 +332,7 @@ export function OverlayControls({
                 <span>
                   <span className="block font-medium">Auto Realism</span>
                   <span className="mt-1 block text-xs leading-5 text-stone-500">
-                    Automatically matches lighting, shadows, edges, and camera quality to the uploaded photo.
+                    Automatically matches lighting, edges, and camera quality to the uploaded photo.
                   </span>
                 </span>
                 <input

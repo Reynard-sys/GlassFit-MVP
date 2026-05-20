@@ -369,21 +369,22 @@ export class ProductModelRenderer {
 
     const ambientColor = colorFromRgb(lighting.ambient_rgb);
     const meanIntensity = lighting.mean_rgb.reduce((sum, value) => sum + value, 0) / 3;
-    const exposure = THREE.MathUtils.clamp(meanIntensity / 135, 0.72, 1.24);
+    const exposure = THREE.MathUtils.clamp(meanIntensity / 128 + 0.04, 0.82, 1.3);
     const direction = lighting.light_direction;
+    const normalizedSharpness = THREE.MathUtils.clamp(lighting.sharpness / 1.5, 0, 1);
 
     this.renderer.toneMappingExposure = exposure;
     this.ambientLight.color.copy(ambientColor);
     this.ambientLight.intensity = THREE.MathUtils.clamp(
-      1.15 + lighting.saturation * 0.5 + exposure * 0.35,
-      1.1,
-      2.05,
+      1.05 + lighting.saturation * 0.35 + exposure * 0.28,
+      1,
+      1.8,
     );
-    this.keyLight.color.copy(ambientColor).lerp(new THREE.Color(0xffffff), 0.32);
+    this.keyLight.color.copy(ambientColor).lerp(new THREE.Color(0xffffff), 0.45);
     this.keyLight.intensity = THREE.MathUtils.clamp(
-      1.45 + lighting.contrast * 0.45,
-      1.25,
-      2.6,
+      1.65 + lighting.contrast * 0.5,
+      1.45,
+      2.8,
     );
     this.keyLight.position.set(
       direction.x * 4.5 || 2.8,
@@ -391,7 +392,7 @@ export class ProductModelRenderer {
       4.4,
     );
     this.rimLight.color.set(lighting.warmth >= 0 ? 0xffead3 : 0xd8eeff);
-    this.rimLight.intensity = THREE.MathUtils.clamp(0.35 + lighting.sharpness * 0.45, 0.28, 1);
+    this.rimLight.intensity = THREE.MathUtils.clamp(0.55 + normalizedSharpness * 0.35, 0.45, 1.05);
     this.rimLight.position.set(-direction.x * 3.5 || -3, 2.4, -3.4);
   }
 

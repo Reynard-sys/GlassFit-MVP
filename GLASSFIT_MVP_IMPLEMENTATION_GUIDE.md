@@ -2,6 +2,8 @@
 
 This document records what was implemented in the GlassFit MVP, what technologies were used, why the choices were made, and how this prototype can guide the real project build.
 
+Last source audit: May 19, 2026. This guide reflects the current checked-in project files under `src/`, `fastapi-service/`, `scripts/`, `public/`, and the project configuration files.
+
 ## 1. Project Goal
 
 GlassFit is a photo-based visualization system for customized glass and aluminum fitting. The MVP focuses only on proving the core feasibility pipeline:
@@ -47,10 +49,11 @@ The frontend handles the user experience, 3D rendering, canvas composition, over
 - **Next.js 16.2.6**
   - App Router project structure.
   - Uses `src/app/page.tsx` as the main route.
-  - `next.config.ts` sets `turbopack.root` to avoid workspace-root warnings.
+  - `next.config.ts` enables the React Compiler and sets `turbopack.root` to avoid workspace-root warnings.
 
 - **React 19.2.4**
   - Used for interactive UI state, upload flow, object toggles, and canvas controls.
+  - The project includes `babel-plugin-react-compiler` and keeps the source compatible with compiler-driven optimization.
 
 - **TypeScript**
   - Used for shared frontend interfaces such as `DetectedObject`, `ImageAnalysisResponse`, `LightingAnalysis`, and `OverlayTransform`.
@@ -192,17 +195,24 @@ Controls the active editable 3D overlay:
 - rotate on photo
 - 3D yaw
 - 3D pitch
-- opacity
 - nudge left/up/right/down
 - reset
 - apply/place overlay
 - cancel active editing
 - duplicate active overlay
 - window glass view mode for window overlays
+- Auto Realism toggle
+- Auto-fit to Scene action
+- placement type selection
 - enable/disable ambient light adjustment
+- enable/disable position-based ambient matching
+- enable/disable spatial ambient relighting
 - enable/disable realistic shadows
 - reset automatic shadow settings
+- advanced perspective, floor guide, grounding shadow, camera match, and shadow tuning controls
 - generate output
+
+General product opacity exists in the transform type but is not currently exposed as a customer-facing slider. Window glass opacity is exposed separately for window overlays.
 
 ```text
 src/components/ProductModelPanel.tsx
@@ -217,7 +227,7 @@ Lists product model choices and starts a new active overlay:
 src/components/PlacedOverlayPanel.tsx
 ```
 
-Lists flattened placed overlays and exposes layer actions:
+Lists cached placed overlays and exposes layer actions:
 
 - select
 - edit
@@ -233,14 +243,21 @@ src/components/CanvasEditor.tsx
 Core visual compositor. Handles:
 
 - uploaded image drawing
-- placed overlay image layer drawing
+- cached placed overlay image layer drawing
 - active 3D model rendering/compositing
 - dragging only the active overlay on the canvas
 - applying ambient model matching
+- applying position-based ambient matching metadata
+- applying spatial ambient relighting metadata
+- applying Auto Realism, perspective, camera matching, and edge feathering
 - drawing directional cast shadows
 - drawing contact shadows
+- drawing enhanced grounding/foot shadows
 - drawing per-overlay original-image object cutouts above the model
+- drawing editor-only outline and floor guide helpers in preview
 - exporting the final visualization as PNG
+
+Placed overlays are not full background composites. The app stores a transparent model render plus saved overlay metadata, then re-applies the saved visual effects during preview and export.
 
 ```text
 src/components/ResultPreview.tsx
@@ -256,6 +273,22 @@ Shared TypeScript interfaces:
 
 - `BrightnessAnalysis`
 - `LightingAnalysis`
+- `CanvasBounds`
+- `LocalLightingAnalysis`
+- `LocalAmbientAdjustments`
+- `LocalAmbientState`
+- `LightingGridCell`
+- `SpatialLightingMap`
+- `SpatialRelightSettings`
+- `SpatialRelightResult`
+- `PerspectiveSettings`
+- `FloorAnchorSettings`
+- `GroundingShadowSettings`
+- `CameraMatchSettings`
+- `GroundingRealismSettings`
+- `PlacementType`
+- `AutoRealismSettings`
+- `AutoRealismResult`
 - `DetectedObject`
 - `ImageAnalysisResponse`
 - `ProductModelType`
@@ -275,7 +308,7 @@ src/lib/imageApi.ts
 Frontend API client for `/analyze-image`. Also handles:
 
 - accepted image file types
-- max upload size
+- 12 MB frontend upload size validation
 - API base URL
 - mask URL normalization
 
@@ -333,10 +366,13 @@ FastAPI application. Handles:
 - `/health`
 - `/analyze-image`
 - temporary upload saving
+- upload cleanup after analysis
 - brightness analysis
 - lighting analysis
 - segmentation analysis
 - serving generated masks from `/masks`
+
+CORS is limited to `localhost` and `127.0.0.1` development origins on any port.
 
 ```text
 fastapi-service/brightness.py
@@ -448,10 +484,12 @@ blender --background "Ikea 3-Drawer.blend" --python scripts/export_blend_to_glb.
    - rotate on photo
    - yaw
    - pitch
-   - opacity
+   - Auto Realism / placement type
+   - window glass mode when editing a window overlay
+   - advanced perspective, grounding, lighting, and shadow settings when needed
 9. User toggles object occlusion for that active overlay:
    - enabled object masks restore original photo pixels above that model
-10. User clicks **Apply Overlay** to flatten the active 3D render into a placed layer.
+10. User clicks **Apply Overlay** to capture the active 3D render plus its saved settings into a placed layer.
 11. User can add more models, edit placed overlays, duplicate overlays, hide/show layers, delete layers, and reorder layers.
 12. User clicks **Generate Output**.
 13. Canvas exports a final PNG with all visible placed overlays plus the active overlay if one is being edited.
@@ -471,6 +509,10 @@ Input:
 multipart/form-data
 image: JPG, JPEG, or PNG
 ```
+
+The frontend accepts `image/jpeg` and `image/png` up to 12 MB. The backend also
+rejects other content types, but it currently relies on the frontend for the
+upload-size limit.
 
 Output shape:
 
@@ -581,11 +623,18 @@ Relevant labels include:
 - potted plant
 - bed
 - table/dining table
+- toilet
 - TV
 - laptop
+- mouse
+- remote
 - keyboard
+- cell phone
+- microwave
+- oven
 - sink
 - refrigerator
+- book
 - vase
 - clock
 
@@ -617,12 +666,14 @@ Layering:
 2. For each visible placed overlay in layer order:
    - directional cast shadow
    - contact shadow
-   - flattened model render
+   - enhanced grounding shadow when enabled
+   - cached transparent model render with saved ambient/spatial/Auto Realism processing
    - original-image object cutouts for that overlay's toggled objects
 3. Active editable overlay, if present:
    - directional cast shadow
    - contact shadow
-   - live Three.js model render
+   - enhanced grounding shadow when enabled
+   - live Three.js model render with preview processing
    - original-image object cutouts for the active overlay
 ```
 
@@ -667,9 +718,10 @@ The procedural fallback is only for development continuity. The real project sho
 The MVP uses a hybrid active-overlay plus flattened-layer approach:
 
 - Only one overlay is actively editable with a live Three.js renderer at a time.
-- Clicking **Apply Overlay** stores the current model render as a transparent flattened image layer.
-- The placed overlay also keeps its source settings: model type, model path, transform, shadows, ambient setting, and occlusion object IDs.
-- Placed overlays are previewed and exported from their flattened image layer instead of keeping many live WebGL model instances.
+- Clicking **Apply Overlay** stores a transparent render of the current model in `flattenedImageDataUrl`.
+- The placed overlay also keeps source settings and derived metadata: model type, model path, transform, shadows, ambient settings, local ambient sample, spatial relighting result, Auto Realism result, grounding settings, window glass settings, and occlusion object IDs.
+- Placed overlays are previewed and exported from this cached model image plus saved metadata instead of keeping many live WebGL model instances.
+- Shadows, perspective transforms, camera matching, spatial relighting, Auto Realism, and object cutouts are applied by `CanvasEditor` during preview/export. They are not permanently baked into the stored background photo.
 
 This reduces GPU load, avoids multiple simultaneous Three.js renderers, and makes PNG export more reliable on mid-range devices.
 
@@ -857,6 +909,11 @@ shadow strength, leg shadow strength, shadow softness, perspective skew, and
 face-shading strength. Duplicated and edited overlays keep their Auto Realism
 settings but recompute the result when they are applied again.
 
+For active overlay preview, `CanvasEditor` can derive an effective Auto Realism
+result from the current transform and global lighting so the preview remains
+representative. The more position-specific local sample, spatial lighting map,
+and saved `autoRealismResult` are produced when the overlay is applied.
+
 Placement type changes the defaults. Cabinets start as `Floor-standing`, with
 stronger base and foot shadows plus box-model face shading. Windows start as
 `Wall-mounted`, with weak or disabled floor grounding while preserving glass
@@ -888,10 +945,11 @@ sharp render edges, or model footprint grounding. The `Perspective & Grounding`
 controls add a practical manual realism pass on top of the existing lighting
 pipeline.
 
-Perspective adjustment is enabled by default and uses an affine canvas
-approximation after the 3D model has been rendered to a transparent overlay
-canvas. The user can adjust skew X/Y, vertical tilt, floor angle, and simple
-perspective X/Y values so a cabinet or window can better follow the room
+Auto Realism enables effective perspective assistance by default. The advanced
+manual perspective controls start conservative and collapsed, then use an affine
+canvas approximation after the 3D model has been rendered to a transparent
+overlay canvas. The user can adjust skew X/Y, vertical tilt, floor angle, and
+simple perspective X/Y values so a cabinet or window can better follow the room
 perspective without requiring true camera calibration.
 
 Floor anchoring gives each overlay a normalized anchor point on the uploaded
@@ -913,11 +971,11 @@ softness, deterministic grain, compression-style smoothing, and alpha edge
 feathering while preserving transparency. This helps the rendered model avoid
 the too-clean digital edge that can stand out against phone photos.
 
-Placed overlays remain flattened visual layers. Duplicating an overlay copies
-the grounding realism settings into an independent duplicate, and editing a
-placed overlay restores those settings into the active overlay. Object-aware
-cutouts still draw above the transformed model, and window glass modes continue
-to run before camera matching and edge blending.
+Placed overlays remain cached layer records rather than live WebGL renderers.
+Duplicating an overlay copies the grounding realism settings into an independent
+duplicate, and editing a placed overlay restores those settings into the active
+overlay. Object-aware cutouts still draw above the transformed model, and window
+glass modes continue to run before camera matching and edge blending.
 
 This feature is intentionally manual and MVP-friendly. It is not automatic
 floor-plane detection, depth estimation, true perspective warp, physical
@@ -968,9 +1026,14 @@ The exported image includes:
 - all visible placed overlays in layer order
 - each overlay's directional cast shadow
 - each overlay's contact shadow
+- each overlay's enhanced grounding shadows when enabled by Auto Realism or advanced controls
 - each overlay's ambience-matched 3D model render
+- each overlay's position-based ambient adjustment and spatial relighting, when available
+- each overlay's Auto Realism camera match, edge blend, face shading, and perspective transform, when enabled
 - each overlay's enabled object cutouts
 - the active overlay if one is being edited
+
+Editor-only outlines and floor guide markers are redrawn only for preview and are omitted from export.
 
 The output is shown in the before/after panel and can be downloaded as:
 
@@ -990,7 +1053,7 @@ The MVP handles:
 - missing GLB model
 - missing window GLB model
 - editing conflicts when another active overlay has unsaved changes
-- exporting with no visible overlays
+- exporting with no visible overlays, which generates the uploaded photo and shows a warning
 - canvas export failure
 
 If the backend fails, the frontend allows manual overlay editing.
@@ -1011,6 +1074,9 @@ Open:
 ```text
 http://localhost:3000
 ```
+
+The repo does not commit `node_modules`. Run `npm install` before using local
+Next.js package docs or build tooling.
 
 ### Backend
 
@@ -1038,7 +1104,7 @@ NEXT_PUBLIC_IMAGE_API_URL=http://localhost:8000
 
 ## 14. Validation Performed
 
-The project was checked with:
+Historical implementation validation was recorded with:
 
 ```powershell
 npm run lint
@@ -1055,6 +1121,9 @@ Confirmed response included:
 - `segmentation`
 - detected objects
 - generated mask URLs
+
+For the May 19, 2026 source-audit documentation update, no application code was
+changed and these validation commands were not rerun.
 
 ## 15. Git Ignore / Generated Files
 
@@ -1113,9 +1182,9 @@ It is good enough for MVP feasibility but should be improved for production.
 
 ### Multiple Overlay Editing
 
-Multiple overlays are supported through flattened canvas layers for reliability. Only one overlay is actively editable at a time. This is intentional: it keeps WebGL usage low, avoids many live Three.js renderers, and makes final PNG generation more predictable.
+Multiple overlays are supported through cached transparent model renders plus saved metadata for reliability. Only one overlay is actively editable at a time. This is intentional: it keeps WebGL usage low, avoids many live Three.js renderers, and makes final PNG generation more predictable.
 
-Placed overlays can still be re-edited because the app saves their model type, transform, shadows, ambient setting, and per-overlay occlusion IDs.
+Placed overlays can still be re-edited because the app saves their model type, transform, shadows, ambient settings, local/spatial realism metadata, Auto Realism settings, grounding settings, window glass settings, and per-overlay occlusion IDs.
 
 ### 3D Assets
 
@@ -1270,8 +1339,8 @@ For the best demo results:
 4. Click **Apply Overlay** before adding a second product.
 5. Toggle objects that should visually block each product.
 6. Use yaw/pitch to make the 3D model face the same direction as the room perspective.
-7. Keep opacity near 90-100 percent for solid products.
-8. Use ambience matching ON for the most realistic output.
+7. For window overlays, choose Frosted, Outdoor, or Solid glass mode when the uploaded room photo should not show through the pane.
+8. Keep Auto Realism, ambient matching, position-based matching, and spatial relighting ON for the most realistic output.
 
 ## 20. MVP Status Summary
 
@@ -1299,12 +1368,21 @@ Completed:
 - 3D yaw/pitch controls
 - active editable overlay state
 - multiple placed overlay layers
+- cached transparent model renders plus saved per-overlay realism metadata
 - apply/place overlay workflow
 - edit placed overlay workflow
 - duplicate active and placed overlays
 - hide/show, delete, and reorder placed overlays
 - ambience-based relighting
 - ambience-based model color matching
+- position-based ambient matching
+- spatial ambient relighting
+- Auto Realism Engine
+- Auto-fit to Scene
+- placement type defaults for floor-standing, wall-mounted, and tabletop overlays
+- advanced perspective and grounding controls
+- enhanced grounding/foot shadows
+- camera match, edge feathering, grain, and face-shading passes
 - automatic directional cast shadow
 - automatic contact shadow
 - manual shadow controls
@@ -1313,6 +1391,20 @@ Completed:
 - before/after preview
 - download button
 - local development documentation
+- React Compiler enabled in `next.config.ts`
 
 This MVP is a strong feasibility prototype. For the real project, the biggest next steps are custom model assets, custom segmentation training, better perspective/depth estimation, and persistent project/product workflows.
+
+## 21. May 19, 2026 Source Audit Notes
+
+This audit reconciled the guide against the current repo contents.
+
+- Git status was clean before this documentation update.
+- The main runtime code is in `src/`, the image-analysis service is in `fastapi-service/`, runtime model assets are in `public/models/`, and optional window texture assets are in `public/textures/`.
+- Planning prompt files such as `MVP.md`, `shadow.md`, `upgrade.md`, `refine.md`, `duplicate.md`, `additional.md`, and `auto.md` describe the feature requests that led to the current implementation.
+- The current frontend config uses Next.js 16.2.6, React 19.2.4, Tailwind CSS 4, Three.js 0.184.x, TypeScript 5, and the React Compiler.
+- The current backend dependency file includes FastAPI, Uvicorn, OpenCV, NumPy, python-multipart, and Ultralytics in `fastapi-service/requirements.txt`.
+- Runtime uploads are deleted after analysis. Generated mask images and YOLO weight files are intentionally ignored by git.
+- `node_modules` is not part of the repo; run `npm install` before using local Next.js package docs or build tooling.
+- The most important architecture clarification from this audit is that placed overlays store a cached transparent model render plus saved metadata. The canvas compositor reapplies shadows, ambient matching, local/spatial relighting, Auto Realism, perspective/camera matching, and object cutouts during preview and export.
 
