@@ -5,13 +5,19 @@ import { CollapsiblePanel } from "@/components/CollapsiblePanel";
 import {
   clamp,
   DEFAULT_GROUNDING_REALISM,
-  DEFAULT_SPATIAL_RELIGHT_SETTINGS,
+  getSpatialRelightSettingsForAmbient,
   getDefaultAutoRealismSettings,
+  normalizeAmbientLightAdjustmentSettings,
 } from "@/lib/canvasUtils";
+import {
+  getDefaultOpacityForGlassAppearance,
+  normalizeWindowGlassSettings,
+} from "@/lib/productModels";
 import type {
   ActiveOverlayState,
+  AmbientLightAdjustmentSettings,
   AutoRealismSettings,
-  GlassViewMode,
+  GlassAppearanceMode,
   GroundingRealismSettings,
   OverlayTransform,
   PlacementType,
@@ -54,6 +60,8 @@ export function OverlayControls({
     activeOverlay?.autoRealism,
     activeOverlay?.modelType,
   );
+  const ambientAdjustment =
+    normalizeAmbientLightAdjustmentSettings(activeOverlay);
 
   function setTransform(
     update: SetStateAction<OverlayTransform>,
@@ -88,32 +96,72 @@ export function OverlayControls({
     });
   }
 
+  function updateAmbientAdjustmentSettings(
+    update: Partial<AmbientLightAdjustmentSettings>,
+  ) {
+    setActiveOverlay((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const nextAmbient = {
+        ...normalizeAmbientLightAdjustmentSettings(current),
+        ...update,
+      };
+      const nextSpatialRelight = getSpatialRelightSettingsForAmbient({
+        ...current,
+        ambientAdjustment: nextAmbient,
+      });
+
+      return {
+        ...current,
+        ambientEnabled: nextAmbient.enabled,
+        ambientAdjustment: nextAmbient,
+        positionBasedAmbientEnabled:
+          nextAmbient.enabled && nextAmbient.usePositionMatch,
+        spatialRelight: nextSpatialRelight,
+      };
+    });
+  }
+
   function toggleAmbientLight(enabled: boolean) {
-    setActiveOverlay((current) =>
-      current ? { ...current, ambientEnabled: enabled } : current,
-    );
+    updateAmbientAdjustmentSettings({ enabled });
   }
 
   function togglePositionBasedAmbient(enabled: boolean) {
-    setActiveOverlay((current) =>
-      current ? { ...current, positionBasedAmbientEnabled: enabled } : current,
-    );
+    updateAmbientAdjustmentSettings({ usePositionMatch: enabled });
   }
 
   function updateSpatialRelightSettings(
     update: Partial<SpatialRelightSettings>,
   ) {
-    setActiveOverlay((current) =>
-      current
-        ? {
-            ...current,
-            spatialRelight: {
-              ...getSpatialRelightSettings(current.spatialRelight),
-              ...update,
-            },
-          }
-        : current,
-    );
+    setActiveOverlay((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const currentAmbient = normalizeAmbientLightAdjustmentSettings(current);
+      const nextSpatial = {
+        ...getSpatialRelightSettings(current),
+        ...update,
+      };
+      const nextAmbient = {
+        ...currentAmbient,
+        useSpatialRelight: update.enabled ?? currentAmbient.useSpatialRelight,
+        spatialRelightStrength:
+          update.intensity ?? currentAmbient.spatialRelightStrength,
+      };
+
+      return {
+        ...current,
+        ambientAdjustment: nextAmbient,
+        spatialRelight: getSpatialRelightSettingsForAmbient({
+          ...current,
+          ambientAdjustment: nextAmbient,
+          spatialRelight: nextSpatial,
+        }),
+      };
+    });
   }
 
   function toggleSpatialRelight(enabled: boolean) {
@@ -214,10 +262,10 @@ export function OverlayControls({
     });
   }
 
-  function updateGlassMode(mode: GlassViewMode) {
+  function updateGlassMode(mode: GlassAppearanceMode) {
     updateWindowGlassSettings({
       mode,
-      opacity: getDefaultOpacityForGlassMode(mode),
+      opacity: getDefaultOpacityForGlassAppearance(mode),
     });
   }
 
@@ -321,7 +369,6 @@ export function OverlayControls({
           {activeOverlay.modelType === "window" ? (
             <WindowGlassControls
               onModeChange={updateGlassMode}
-              onUpdate={updateWindowGlassSettings}
               settings={getWindowGlassSettings(activeOverlay.windowGlass)}
             />
           ) : null}
@@ -330,9 +377,31 @@ export function OverlayControls({
             <div className="space-y-4">
               <label className="flex cursor-pointer items-start justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-800">
                 <span>
+                  <span className="block font-medium">
+                    Ambient Light Adjustment
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-stone-500">
+                    Automatically matches the product lighting to the uploaded photo while you edit.
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-stone-500">
+                    Uses the overall photo lighting and the overlay&apos;s current position.
+                  </span>
+                </span>
+                <input
+                  checked={ambientAdjustment.enabled}
+                  className="mt-1 h-5 w-5 shrink-0 accent-teal-600"
+                  onChange={(event) =>
+                    toggleAmbientLight(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+              </label>
+
+              <label className="flex cursor-pointer items-start justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm text-stone-800">
+                <span>
                   <span className="block font-medium">Auto Realism</span>
                   <span className="mt-1 block text-xs leading-5 text-stone-500">
-                    Automatically matches lighting, edges, and camera quality to the uploaded photo.
+                    Adds final output polish such as grounding, edge blending, and camera matching.
                   </span>
                 </span>
                 <input
@@ -589,14 +658,18 @@ export function OverlayControls({
             </div>
           </ControlGroup>
 
-          <ControlGroup defaultOpen={false} title="Advanced tuning: Lighting & Shadows">
+          <ControlGroup defaultOpen={false} title="Advanced / Developer Tuning">
             <div className="space-y-3">
               <label className="flex cursor-pointer items-center justify-between gap-4 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm font-medium text-stone-800">
-                <span>Apply Ambient Light Adjustment</span>
+                <span>Global ambient match</span>
                 <input
-                  checked={activeOverlay.ambientEnabled}
+                  checked={ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch}
                   className="h-5 w-5 accent-teal-600"
-                  onChange={(event) => toggleAmbientLight(event.target.checked)}
+                  onChange={(event) =>
+                    updateAmbientAdjustmentSettings({
+                      useGlobalMatch: event.target.checked,
+                    })
+                  }
                   type="checkbox"
                 />
               </label>
@@ -610,7 +683,7 @@ export function OverlayControls({
                   </span>
                 </span>
                 <input
-                  checked={activeOverlay.positionBasedAmbientEnabled ?? true}
+                  checked={ambientAdjustment.enabled && ambientAdjustment.usePositionMatch}
                   className="h-5 w-5 shrink-0 accent-teal-600"
                   onChange={(event) =>
                     togglePositionBasedAmbient(event.target.checked)
@@ -628,13 +701,13 @@ export function OverlayControls({
                   </span>
                 </span>
                 <input
-                  checked={getSpatialRelightSettings(activeOverlay.spatialRelight).enabled}
+                  checked={ambientAdjustment.enabled && ambientAdjustment.useSpatialRelight}
                   className="h-5 w-5 shrink-0 accent-teal-600"
                   onChange={(event) => toggleSpatialRelight(event.target.checked)}
                   type="checkbox"
                 />
               </label>
-              {getSpatialRelightSettings(activeOverlay.spatialRelight).enabled ? (
+              {ambientAdjustment.useSpatialRelight ? (
                 <ControlSlider
                   label="Relighting strength"
                   max={1}
@@ -645,9 +718,9 @@ export function OverlayControls({
                     })
                   }
                   step={0.01}
-                  value={getSpatialRelightSettings(activeOverlay.spatialRelight).intensity}
+                  value={getSpatialRelightSettings(activeOverlay).intensity}
                   valueLabel={`${Math.round(
-                    getSpatialRelightSettings(activeOverlay.spatialRelight).intensity * 100,
+                    getSpatialRelightSettings(activeOverlay).intensity * 100,
                   )}%`}
                 />
               ) : null}
@@ -804,32 +877,34 @@ function GenerateButton({ isGenerating, onGenerate }: GenerateButtonProps) {
 }
 
 interface WindowGlassControlsProps {
-  onModeChange: (mode: GlassViewMode) => void;
-  onUpdate: (update: Partial<WindowGlassSettings>) => void;
+  onModeChange: (mode: GlassAppearanceMode) => void;
   settings: WindowGlassSettings;
 }
 
 function WindowGlassControls({
   onModeChange,
-  onUpdate,
   settings,
 }: WindowGlassControlsProps) {
   const description = getGlassModeDescription(settings.mode);
 
   return (
-    <ControlGroup title="Window Glass View">
+    <ControlGroup title="Glass Appearance">
       <div className="space-y-4">
+        <p className="text-xs leading-5 text-stone-500">
+          Controls how the glass area appears in the visualization.
+        </p>
         <label className="block">
-          <span className="text-sm font-medium text-stone-800">Mode</span>
+          <span className="text-sm font-medium text-stone-800">Appearance</span>
           <select
             className="mt-2 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-800 outline-none transition focus:border-teal-600 focus:ring-2 focus:ring-teal-100"
-            onChange={(event) => onModeChange(event.target.value as GlassViewMode)}
+            onChange={(event) => onModeChange(event.target.value as GlassAppearanceMode)}
             value={settings.mode}
           >
-            <option value="transparent">Transparent</option>
-            <option value="frosted">Frosted / Empty</option>
+            <option value="clear">Clear Glass</option>
+            <option value="frosted">Frosted Glass</option>
+            <option value="opaque">Opaque Glass</option>
+            <option value="reflective">Reflective Glass</option>
             <option value="outdoor">Outdoor View</option>
-            <option value="solid">Solid Tint</option>
           </select>
         </label>
 
@@ -837,35 +912,15 @@ function WindowGlassControls({
           {description}
         </p>
 
-        <ControlSlider
-          label="Glass opacity"
-          max={1}
-          min={0}
-          onChange={(opacity) => onUpdate({ opacity: clamp(opacity, 0, 1) })}
-          step={0.05}
-          value={settings.opacity}
-          valueLabel={`${Math.round(settings.opacity * 100)}%`}
-        />
-
-        {settings.mode === "frosted" || settings.mode === "solid" ? (
-          <label className="flex items-center justify-between gap-3 rounded-md border border-stone-200 bg-white px-3 py-3 text-sm font-medium text-stone-800">
-            <span>Tint color</span>
-            <input
-              aria-label="Window glass tint color"
-              className="h-9 w-14 cursor-pointer rounded-md border border-stone-300 bg-white p-1"
-              onChange={(event) => onUpdate({ tintColor: event.target.value })}
-              type="color"
-              value={settings.tintColor}
-            />
-          </label>
-        ) : null}
-
         {settings.mode === "outdoor" ? (
           <p className="rounded-md border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900">
             Uses /textures/outdoor-view.jpg when present, with a generated sky
             fallback.
           </p>
         ) : null}
+        <p className="rounded-md border border-stone-200 bg-white px-3 py-2 text-xs leading-5 text-stone-600">
+          Glass appearance presets are visual approximations. Actual glass types depend on available product options.
+        </p>
       </div>
     </ControlGroup>
   );
@@ -1007,18 +1062,18 @@ function nudge(
 function getWindowGlassSettings(
   settings: WindowGlassSettings | undefined,
 ): WindowGlassSettings {
-  return {
-    mode: settings?.mode ?? "frosted",
-    opacity: settings?.opacity ?? 0.9,
-    tintColor: settings?.tintColor ?? "#dbeafe",
-    outdoorTexturePath: settings?.outdoorTexturePath ?? "/textures/outdoor-view.jpg",
-  };
+  return normalizeWindowGlassSettings(settings);
 }
 
 function getSpatialRelightSettings(
-  settings: SpatialRelightSettings | undefined,
+  settings: {
+    ambientAdjustment?: AmbientLightAdjustmentSettings;
+    ambientEnabled?: boolean;
+    positionBasedAmbientEnabled?: boolean;
+    spatialRelight?: SpatialRelightSettings;
+  } | undefined,
 ): SpatialRelightSettings {
-  return settings ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+  return getSpatialRelightSettingsForAmbient(settings);
 }
 
 function getAutoRealismSettings(
@@ -1034,30 +1089,18 @@ function getGroundingRealismSettings(
   return settings ?? DEFAULT_GROUNDING_REALISM;
 }
 
-function getDefaultOpacityForGlassMode(mode: GlassViewMode) {
+function getGlassModeDescription(mode: GlassAppearanceMode) {
   switch (mode) {
-    case "transparent":
-      return 0.28;
-    case "outdoor":
-      return 1;
-    case "solid":
-      return 1;
-    case "frosted":
-    default:
-      return 0.9;
-  }
-}
-
-function getGlassModeDescription(mode: GlassViewMode) {
-  switch (mode) {
-    case "transparent":
-      return "Room photo remains visible through the glass.";
+    case "clear":
+      return "Slightly transparent glass with subtle highlights.";
     case "outdoor":
       return "Replaces the glass pane with an outdoor scene.";
-    case "solid":
-      return "Uses a plain colored glass fill.";
+    case "opaque":
+      return "Blocks the room photo behind the pane with a clean privacy-glass look.";
+    case "reflective":
+      return "Uses neutral reflective glass with a soft highlight.";
     case "frosted":
     default:
-      return "Blocks most background detail using a soft glass tint.";
+      return "Blocks most background detail with a soft frosted glass surface.";
   }
 }

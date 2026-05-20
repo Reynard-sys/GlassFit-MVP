@@ -9,23 +9,27 @@ import { ProductModelPanel } from "@/components/ProductModelPanel";
 import { ResultPreview } from "@/components/ResultPreview";
 import { UploadPanel } from "@/components/UploadPanel";
 import {
+  DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS,
   DEFAULT_GROUNDING_REALISM,
   DEFAULT_OVERLAY_TRANSFORM,
-  DEFAULT_SPATIAL_RELIGHT_SETTINGS,
   deriveAutoRealismSettings,
   deriveShadowSettingsFromLighting,
+  getSpatialRelightSettingsForAmbient,
   getDefaultAutoRealismSettings,
   getInitialOverlayTransform,
+  normalizeAmbientLightAdjustmentSettings,
 } from "@/lib/canvasUtils";
 import { analyzeImage, getImageApiBaseUrl, validateImageFile } from "@/lib/imageApi";
 import {
   getDefaultWindowGlassSettings,
   getNextOverlayName,
   getProductModelOption,
+  normalizeWindowGlassSettings,
   PRODUCT_MODEL_OPTIONS,
 } from "@/lib/productModels";
 import type {
   ActiveOverlayState,
+  AmbientLightAdjustmentSettings,
   AutoRealismSettings,
   CanvasEditorHandle,
   FlattenedOverlayResult,
@@ -160,6 +164,9 @@ export function GlassFitMvp() {
     }
 
     const option = getProductModelOption(modelType);
+    const ambientAdjustment = cloneAmbientAdjustmentSettings(
+      DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS,
+    );
     setActiveOverlay({
       mode: "adding",
       name: getNextOverlayName(modelType, placedOverlays),
@@ -167,9 +174,13 @@ export function GlassFitMvp() {
       modelPath: option.modelPath,
       transform: getDefaultTransform(),
       shadowSettings: getDefaultShadowSettings(),
-      ambientEnabled: true,
-      positionBasedAmbientEnabled: true,
-      spatialRelight: cloneSpatialRelightSettings(DEFAULT_SPATIAL_RELIGHT_SETTINGS),
+      ambientEnabled: ambientAdjustment.enabled,
+      ambientAdjustment,
+      positionBasedAmbientEnabled:
+        ambientAdjustment.enabled && ambientAdjustment.usePositionMatch,
+      spatialRelight: cloneSpatialRelightSettings(
+        getSpatialRelightSettingsForAmbient({ ambientAdjustment }),
+      ),
       groundingRealism: getDefaultGroundingRealism(modelType),
       autoRealism: getDefaultAutoRealismSettings(modelType),
       occlusionObjectIds: [],
@@ -371,6 +382,9 @@ export function GlassFitMvp() {
             overlay.id === sourceOverlayId ? sourceOverlay : overlay,
           )
         : [...placedOverlays, sourceOverlay];
+      const ambientAdjustment = cloneAmbientAdjustmentSettings(
+        normalizeAmbientLightAdjustmentSettings(activeOverlay),
+      );
 
       setPlacedOverlays(projectedOverlays);
       setSelectedOverlayId(sourceOverlayId);
@@ -381,10 +395,15 @@ export function GlassFitMvp() {
         modelPath: activeOverlay.modelPath,
         transform: offsetTransform(activeOverlay.transform),
         shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
-        ambientEnabled: activeOverlay.ambientEnabled,
-        positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
+        ambientEnabled: ambientAdjustment.enabled,
+        ambientAdjustment,
+        positionBasedAmbientEnabled:
+          ambientAdjustment.enabled && ambientAdjustment.usePositionMatch,
         spatialRelight: cloneSpatialRelightSettings(
-          getSpatialRelightSettings(activeOverlay),
+          getSpatialRelightSettings({
+            ...activeOverlay,
+            ambientAdjustment,
+          }),
         ),
         groundingRealism: cloneGroundingRealismSettings(
           getGroundingRealismSettings(activeOverlay, activeOverlay.modelType),
@@ -419,6 +438,10 @@ export function GlassFitMvp() {
       return;
     }
 
+    const ambientAdjustment = cloneAmbientAdjustmentSettings(
+      normalizeAmbientLightAdjustmentSettings(overlay),
+    );
+
     setActiveOverlay({
       mode: "editing",
       overlayId: overlay.id,
@@ -427,9 +450,16 @@ export function GlassFitMvp() {
       modelPath: overlay.modelPath,
       transform: cloneTransform(overlay.transform),
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
-      ambientEnabled: overlay.ambientEnabled,
-      positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
-      spatialRelight: cloneSpatialRelightSettings(getSpatialRelightSettings(overlay)),
+      ambientEnabled: ambientAdjustment.enabled,
+      ambientAdjustment,
+      positionBasedAmbientEnabled:
+        ambientAdjustment.enabled && ambientAdjustment.usePositionMatch,
+      spatialRelight: cloneSpatialRelightSettings(
+        getSpatialRelightSettings({
+          ...overlay,
+          ambientAdjustment,
+        }),
+      ),
       groundingRealism: cloneGroundingRealismSettings(
         getGroundingRealismSettings(overlay, overlay.modelType),
       ),
@@ -455,6 +485,10 @@ export function GlassFitMvp() {
       return;
     }
 
+    const ambientAdjustment = cloneAmbientAdjustmentSettings(
+      normalizeAmbientLightAdjustmentSettings(overlay),
+    );
+
     setActiveOverlay({
       mode: "adding",
       name: getNextOverlayName(overlay.modelType, placedOverlays),
@@ -462,9 +496,16 @@ export function GlassFitMvp() {
       modelPath: overlay.modelPath,
       transform: offsetTransform(overlay.transform),
       shadowSettings: cloneShadowSettings(overlay.shadowSettings),
-      ambientEnabled: overlay.ambientEnabled,
-      positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(overlay),
-      spatialRelight: cloneSpatialRelightSettings(getSpatialRelightSettings(overlay)),
+      ambientEnabled: ambientAdjustment.enabled,
+      ambientAdjustment,
+      positionBasedAmbientEnabled:
+        ambientAdjustment.enabled && ambientAdjustment.usePositionMatch,
+      spatialRelight: cloneSpatialRelightSettings(
+        getSpatialRelightSettings({
+          ...overlay,
+          ambientAdjustment,
+        }),
+      ),
       groundingRealism: cloneGroundingRealismSettings(
         getGroundingRealismSettings(overlay, overlay.modelType),
       ),
@@ -673,6 +714,10 @@ function createPlacedOverlayFromActive(
   timestamp: number,
   existingOverlay?: PlacedOverlay,
 ): PlacedOverlay {
+  const ambientAdjustment = cloneAmbientAdjustmentSettings(
+    normalizeAmbientLightAdjustmentSettings(activeOverlay),
+  );
+
   return {
     id: overlayId,
     name: activeOverlay.name,
@@ -681,11 +726,16 @@ function createPlacedOverlayFromActive(
     transform: cloneTransform(activeOverlay.transform),
     shadowSettings: cloneShadowSettings(activeOverlay.shadowSettings),
     occlusionObjectIds: [...activeOverlay.occlusionObjectIds],
-    ambientEnabled: activeOverlay.ambientEnabled,
-    positionBasedAmbientEnabled: getPositionBasedAmbientEnabled(activeOverlay),
+    ambientEnabled: ambientAdjustment.enabled,
+    ambientAdjustment,
+    positionBasedAmbientEnabled:
+      ambientAdjustment.enabled && ambientAdjustment.usePositionMatch,
     localAmbient: flattenedOverlay.localAmbient,
     spatialRelight: cloneSpatialRelightSettings(
-      getSpatialRelightSettings(activeOverlay),
+      getSpatialRelightSettingsForAmbient({
+        ...activeOverlay,
+        ambientAdjustment,
+      }),
     ),
     spatialRelightResult: flattenedOverlay.spatialRelightResult,
     groundingRealism: cloneGroundingRealismSettings(
@@ -695,6 +745,7 @@ function createPlacedOverlayFromActive(
       getAutoRealismSettings(activeOverlay, activeOverlay.modelType),
     ),
     autoRealismResult: flattenedOverlay.autoRealismResult,
+    autoRealismBaked: flattenedOverlay.autoRealismBaked ?? false,
     windowGlass: getWindowGlassForModel(
       activeOverlay.modelType,
       activeOverlay.windowGlass,
@@ -719,21 +770,24 @@ function cloneShadowSettings(shadowSettings: ShadowSettings): ShadowSettings {
   return { ...shadowSettings };
 }
 
-function getPositionBasedAmbientEnabled(overlay: {
-  positionBasedAmbientEnabled?: boolean;
-}) {
-  return overlay.positionBasedAmbientEnabled ?? true;
-}
-
 function getSpatialRelightSettings(overlay: {
+  ambientAdjustment?: AmbientLightAdjustmentSettings;
+  ambientEnabled?: boolean;
+  positionBasedAmbientEnabled?: boolean;
   spatialRelight?: SpatialRelightSettings;
 }) {
-  return overlay.spatialRelight ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+  return getSpatialRelightSettingsForAmbient(overlay);
 }
 
 function cloneSpatialRelightSettings(
   settings: SpatialRelightSettings,
 ): SpatialRelightSettings {
+  return { ...settings };
+}
+
+function cloneAmbientAdjustmentSettings(
+  settings: AmbientLightAdjustmentSettings,
+): AmbientLightAdjustmentSettings {
   return { ...settings };
 }
 
@@ -811,7 +865,7 @@ function cloneGroundingRealismSettings(
 function cloneWindowGlassSettings(
   windowGlass: WindowGlassSettings,
 ): WindowGlassSettings {
-  return { ...windowGlass };
+  return { ...normalizeWindowGlassSettings(windowGlass) };
 }
 
 function getWindowGlassForModel(

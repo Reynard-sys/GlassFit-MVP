@@ -1,4 +1,5 @@
 import type {
+  GlassAppearanceMode,
   PlacedOverlay,
   ProductModelOption,
   ProductModelType,
@@ -38,7 +39,71 @@ export function getDefaultWindowGlassSettings(): WindowGlassSettings {
   return {
     mode: "frosted",
     opacity: 0.9,
-    tintColor: "#dbeafe",
     outdoorTexturePath: "/textures/outdoor-view.jpg",
   };
+}
+
+export function normalizeGlassAppearanceMode(mode: unknown): GlassAppearanceMode {
+  switch (mode) {
+    case "transparent":
+    case "clear":
+      return "clear";
+    case "solid":
+    case "opaque":
+      return "opaque";
+    case "reflective":
+      return "reflective";
+    case "outdoor":
+      return "outdoor";
+    case "frosted":
+    default:
+      return "frosted";
+  }
+}
+
+export function getDefaultOpacityForGlassAppearance(
+  mode: GlassAppearanceMode,
+) {
+  switch (mode) {
+    case "clear":
+      return 0.34;
+    case "outdoor":
+    case "opaque":
+      return 1;
+    case "reflective":
+      return 0.94;
+    case "frosted":
+    default:
+      return 0.9;
+  }
+}
+
+export function normalizeWindowGlassSettings(
+  settings?: (Partial<WindowGlassSettings> & {
+    mode?: unknown;
+    tintColor?: string;
+  }) | null,
+): WindowGlassSettings {
+  const mode = normalizeGlassAppearanceMode(settings?.mode);
+  const defaultSettings = getDefaultWindowGlassSettings();
+  const opacity =
+    typeof settings?.opacity === "number"
+      ? clamp(settings.opacity, 0, 1)
+      : getDefaultOpacityForGlassAppearance(mode);
+
+  return {
+    ...defaultSettings,
+    ...settings,
+    mode,
+    opacity,
+    outdoorTexturePath:
+      settings?.outdoorTexturePath ?? defaultSettings.outdoorTexturePath,
+    internalTintColor:
+      settings?.internalTintColor ?? settings?.tintColor,
+    tintColor: settings?.tintColor,
+  };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }

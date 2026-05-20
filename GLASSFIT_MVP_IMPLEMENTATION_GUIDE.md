@@ -70,8 +70,8 @@ The frontend handles the user experience, 3D rendering, canvas composition, over
   - Used for final image composition and PNG export.
   - Layers:
     1. Uploaded original photo.
-    2. Directional cast shadow.
-    3. Contact shadow.
+    2. Directional cast shadow for non-window overlays when enabled.
+    3. Contact/grounding shadow passes for non-window overlays when Auto Realism is off and those paths are enabled.
     4. Rendered 3D product model.
     5. Object cutouts from the original photo for enabled occlusion toggles.
 
@@ -200,19 +200,17 @@ Controls the active editable 3D overlay:
 - apply/place overlay
 - cancel active editing
 - duplicate active overlay
-- window glass view mode for window overlays
+- glass appearance presets for window overlays
+- Ambient Light Adjustment toggle
 - Auto Realism toggle
 - Auto-fit to Scene action
 - placement type selection
-- enable/disable ambient light adjustment
-- enable/disable position-based ambient matching
-- enable/disable spatial ambient relighting
 - enable/disable realistic shadows
 - reset automatic shadow settings
-- advanced perspective, floor guide, grounding shadow, camera match, and shadow tuning controls
+- collapsed advanced/developer tuning for position matching, spatial relighting, perspective, floor guide, grounding shadow, camera match, and shadow controls
 - generate output
 
-General product opacity exists in the transform type but is not currently exposed as a customer-facing slider. Window glass opacity is exposed separately for window overlays.
+General product opacity exists in the transform type but is not currently exposed as a customer-facing slider. Window glass opacity is an internal preset value controlled by the selected Glass Appearance mode.
 
 ```text
 src/components/ProductModelPanel.tsx
@@ -246,13 +244,11 @@ Core visual compositor. Handles:
 - cached placed overlay image layer drawing
 - active 3D model rendering/compositing
 - dragging only the active overlay on the canvas
-- applying ambient model matching
-- applying position-based ambient matching metadata
-- applying spatial ambient relighting metadata
-- applying Auto Realism, perspective, camera matching, and edge feathering
-- drawing directional cast shadows
-- drawing contact shadows
-- drawing enhanced grounding/foot shadows
+- applying Ambient Light Adjustment, which wraps global ambient matching, position-based local matching, and spatial relighting
+- applying Auto Realism, perspective, camera matching, face shading, and edge feathering
+- drawing directional cast shadows for non-window overlays
+- drawing contact shadows for non-window overlays when Auto Realism is off
+- drawing enhanced grounding/foot shadows only as an advanced non-window path when Auto Realism is off
 - drawing per-overlay original-image object cutouts above the model
 - drawing editor-only outline and floor guide helpers in preview
 - exporting the final visualization as PNG
@@ -293,7 +289,8 @@ Shared TypeScript interfaces:
 - `ImageAnalysisResponse`
 - `ProductModelType`
 - `ProductModelOption`
-- `GlassViewMode`
+- `AmbientLightAdjustmentSettings`
+- `GlassAppearanceMode`
 - `WindowGlassSettings`
 - `OverlayTransform`
 - `ShadowSettings`
@@ -338,7 +335,7 @@ Three.js model renderer. Handles:
 - normalizing model scale
 - setting camera and lights
 - relighting the model using photo-derived ambience
-- detecting and replacing window glass materials
+- detecting and replacing window glass materials with fixed Glass Appearance presets
 - adding a procedural glass fill plane when a window GLB has no detected glass mesh
 - generating an outdoor glass fallback texture when `/textures/outdoor-view.jpg` is missing
 - rendering the model into a transparent canvas
@@ -484,8 +481,9 @@ blender --background "Ikea 3-Drawer.blend" --python scripts/export_blend_to_glb.
    - rotate on photo
    - yaw
    - pitch
+   - Ambient Light Adjustment
    - Auto Realism / placement type
-   - window glass mode when editing a window overlay
+   - Glass Appearance when editing a window overlay
    - advanced perspective, grounding, lighting, and shadow settings when needed
 9. User toggles object occlusion for that active overlay:
    - enabled object masks restore original photo pixels above that model
@@ -664,15 +662,15 @@ Layering:
 ```text
 1. Full uploaded room photo
 2. For each visible placed overlay in layer order:
-   - directional cast shadow
-   - contact shadow
-   - enhanced grounding shadow when enabled
+   - directional cast shadow for non-window overlays
+   - contact shadow for non-window overlays when Auto Realism is off
+   - enhanced grounding shadow only in advanced non-window tuning when Auto Realism is off
    - cached transparent model render with saved ambient/spatial/Auto Realism processing
    - original-image object cutouts for that overlay's toggled objects
 3. Active editable overlay, if present:
-   - directional cast shadow
-   - contact shadow
-   - enhanced grounding shadow when enabled
+   - directional cast shadow for non-window overlays
+   - contact shadow for non-window overlays when Auto Realism is off
+   - enhanced grounding shadow only in advanced non-window tuning when Auto Realism is off
    - live Three.js model render with preview processing
    - original-image object cutouts for the active overlay
 ```
@@ -733,20 +731,23 @@ Editing restores the saved overlay settings into the active editor and temporari
 
 Duplicating a placed overlay opens the duplicate as the active editable overlay with a small offset. Duplicating the active overlay first stores the current overlay as a placed layer, then opens the offset copy as the active overlay.
 
-### Window Glass View Replacement
+### Glass Appearance
 
-Window overlays support a window-specific `Window Glass View` control with four modes:
+Window overlays support a window-specific `Glass Appearance` control with fixed, business-aligned presets:
 
-- `Transparent`: keeps the glass partially transparent, so the uploaded room photo can show through.
-- `Frosted / Empty`: uses a mostly opaque soft tint to hide background detail behind the pane.
+- `Clear Glass`: keeps the pane slightly transparent while preserving glass highlights so it does not disappear.
+- `Frosted Glass`: uses a mostly opaque neutral frosted material to block most room detail behind the pane.
+- `Opaque Glass`: uses a clean neutral privacy-glass panel and blocks the uploaded room photo behind the pane.
+- `Reflective Glass`: uses a neutral gray/blue-gray reflective material with a subtle highlight.
 - `Outdoor View`: fills the pane with `/textures/outdoor-view.jpg` when present, or a generated sky/ground texture when the image is missing.
-- `Solid Tint`: fills the pane with a plain tint and blocks the uploaded photo behind it.
 
-This exists because the final output is a 2D canvas composite over the uploaded photo. Transparent glass naturally reveals the uploaded photo behind it, which is not always desirable for a window visualization. Frosted, outdoor, and solid modes make the pane visually block or replace that background area.
+The previous arbitrary glass tint/color picker and `Solid Tint` customer-facing mode were removed. Specialty colors or tinted glass options should come from real product catalog variations, not a free color picker in the visualization workspace.
 
-The renderer tries to detect glass meshes by checking mesh, material, and parent names for glass-related terms such as `glass`, `pane`, `transparent`, and `glazing`. If the GLB does not expose a clearly named glass mesh, the renderer adds a procedural rectangular glass fill plane inside the window bounds. The procedural window fallback uses the same material system.
+This exists because the final output is a 2D canvas composite over the uploaded photo. Clear Glass can intentionally show some of the uploaded room through the pane. Frosted, Opaque, Reflective, and Outdoor View modes make the pane visually block or replace that background area.
 
-Window glass settings are saved per overlay. This means `Window 1` can use Outdoor View while `Window 2` uses Frosted / Empty, and duplicated or edited windows preserve their own glass mode, opacity, and tint.
+The renderer tries to detect glass meshes by checking mesh, material, and parent names for glass-related terms such as `glass`, `pane`, `transparent`, and `glazing`. If the GLB does not expose a clearly named glass mesh, the renderer adds a procedural rectangular glass fill plane inside the window bounds. The procedural window fallback uses the same Glass Appearance material system.
+
+Window glass settings are saved per overlay. This means `Window 1` can use Outdoor View while `Window 2` uses Frosted Glass, and duplicated or edited windows preserve their own appearance mode, preset opacity, and outdoor texture path. Older saved modes are migrated as follows: `transparent` -> `clear`, `solid` -> `opaque`, `frosted` -> `frosted`, and `outdoor` -> `outdoor`. Old `tintColor` values are ignored by the normal UI.
 
 Limitations: this is not physical refraction, true depth estimation, or real outdoor reconstruction. It is an MVP material replacement that improves the visual result for a photo-based canvas composite.
 
@@ -811,78 +812,59 @@ This makes the 3D model lighting respond to the uploaded photo.
 
 This makes the model texture and overall quality better match the photo.
 
-### Position-Based Ambient Matching
+### Ambient Light Adjustment
+
+The previous `Position-based ambient matching` and `Spatial ambient relighting`
+customer controls are now combined under one normal workspace control:
+`Ambient Light Adjustment`.
+
+Customer-facing meaning: match the product lighting to the uploaded photo while
+the user edits the overlay.
+
+Internally, Ambient Light Adjustment includes:
+
+- global ambient matching from the uploaded photo analysis
+- position-based local matching from the overlay's current canvas position
+- non-uniform spatial relighting from a small local lighting grid
 
 Global matching happens after image upload and describes the overall photo.
-Position-based ambient matching happens later, when the user applies an
-overlay. The frontend samples only the background region around the overlay's
-current canvas position, including padding around the model bounds, then clamps
-that region to the uploaded image.
+Position-based matching samples the background region around the overlay's
+current canvas position, including padding around the model bounds. The local
+sample estimates mean RGB, brightness, contrast, saturation, warm/cool cast,
+green/magenta tint, and local noise. The app derives conservative local
+adjustments for brightness, contrast, saturation, ambient color mix, subtle
+blur/grain, and shadow opacity.
 
-The local sample estimates:
+Spatial relighting builds a small 5x5 lighting map from the same local region.
+Each cell estimates mean RGB, mean luminance, contrast, and saturation. When
+the overlay is drawn, the renderer samples that map at visible model pixels
+with bilinear interpolation, subtly brightening pixels near brighter background
+cells and darkening pixels near darker cells.
 
-- mean RGB and ambient color
-- local brightness
-- local contrast
-- local saturation
-- warm/cool cast
-- green/magenta tint
-- light noise
+The customer sees only the single `Ambient Light Adjustment` toggle, enabled by
+default. The technical subfeatures remain available in the collapsed
+`Advanced / Developer Tuning` section for debugging: global match,
+position-based matching, spatial relighting, relighting strength, and grid or
+shadow controls.
 
-The app derives conservative local adjustments for brightness, contrast,
-saturation, ambient color mix, subtle blur/grain, and a shadow opacity
-multiplier. These adjustments refine the existing global ambient match rather
-than replacing it. This improves realism when one part of a room is darker or
-brighter than another, while remaining an approximation rather than physically
-accurate relighting.
+While an active overlay is being edited, global matching is live. The
+position-based and spatial preview samples run after a short debounce, so heavy
+sampling does not run continuously during dragging. When the user applies the
+overlay, the current local ambient sample and spatial lighting result are saved
+with the placed overlay. Editing or duplicating an overlay preserves the
+Ambient Light Adjustment settings and recomputes the local/spatial result when
+the overlay is applied again.
 
-The `Position-based ambient matching` toggle is enabled by default in the
-overlay controls. Editing or duplicating an overlay preserves the setting, but
-local lighting is recomputed when the overlay is applied again so moved or
-offset overlays match their new position. If local sampling fails because the
-background is unavailable, the sample area is invalid, or `getImageData` fails,
-the app still places the overlay using the existing global ambient matching.
-
-For window overlays using Outdoor View, the local pass is intentionally softer:
-color mixing is capped and brightness adjustment is limited so the outdoor
-texture remains visible. Object-aware occlusion remains unchanged because
-cutouts are drawn after the model, and shadow controls remain user-driven with
-only a subtle local opacity multiplier.
-
-### Spatial Ambient Relighting
-
-Spatial ambient relighting is the non-uniform follow-up to the position-based
-ambient pass. Global ambient matching estimates the overall image lighting, but
-spatial relighting runs when an overlay is applied and builds a small 5x5
-lighting map from the local image region around the overlay.
-
-Each grid cell estimates:
-
-- mean RGB
-- mean luminance
-- contrast
-- saturation
-
-When the placed overlay is drawn, the renderer samples that map at each visible
-model pixel with bilinear interpolation. Pixels on the model that correspond to
-brighter background cells are subtly brightened, while pixels near darker cells
-are subtly darkened. A small local color influence is mixed in without
-overwriting the product material identity. The backend light direction is also
-used as a soft directional gradient across the model, so the light-facing side
-can read slightly brighter.
-
-The `Spatial ambient relighting` toggle is enabled by default and includes a
-simple strength slider. The map is generated only on Apply Overlay, not while
-dragging, so the live preview remains responsive. Duplicated and edited
-overlays keep their relighting settings but recompute the lighting map when
-they are applied in the new position.
+When Ambient Light Adjustment is off, the renderer uses neutral/default model
+lighting and skips position-based and spatial relighting. The user can still
+move, resize, and rotate the overlay.
 
 Window overlays keep their glass behavior. Outdoor View reduces color influence
 and clamps brightness more tightly so the outdoor scene stays visible. Shadows
-and object-aware occlusion keep the same layer order: shadows first, relit
+and object-aware occlusion keep the same layer order: shadows first, adjusted
 model next, then original-image cutouts above the model. If sampling or
-`getImageData` fails, the overlay still applies with the existing global and
-position-based ambient matching.
+`getImageData` fails, the overlay still applies with the available global or
+neutral render path.
 
 This is an image-based approximation. It improves realism when one side of the
 scene is brighter or darker than another, but it is not physically accurate
@@ -890,17 +872,19 @@ global illumination or true scene relighting.
 
 ### Auto Realism Engine
 
-The Auto Realism Engine is the customer-facing realism layer. It keeps the
-technical lighting, shadow, blur, grain, edge feathering, and perspective
-sliders out of the normal workflow and exposes only three practical controls:
-`Auto Realism`, `Auto-fit to Scene`, and `Placement Type`.
+The Auto Realism Engine remains separate from Ambient Light Adjustment.
+Customer-facing meaning: make the final output look more natural.
 
-Auto Realism derives camera quality matching, edge blending, grounding shadows,
-face shading, and simple perspective assistance from the uploaded image, overlay
-position, model type, placement type, and backend lighting analysis. Global
-ambient matching, position-based ambient matching, and spatial ambient
-relighting still remain part of the pipeline; Auto Realism runs on top of them
-rather than replacing them.
+Auto Realism is output-focused polish. It keeps the technical shadow, blur,
+grain, edge feathering, face shading, and perspective sliders out of the normal
+workflow and exposes only practical controls: `Auto Realism`,
+`Auto-fit to Scene`, and `Placement Type`.
+
+Auto Realism derives camera quality matching, edge blending, face shading, and
+simple perspective assistance from the uploaded image, overlay position, model
+type, placement type, and backend lighting analysis. Ambient Light Adjustment
+still handles workspace lighting matching; Auto Realism runs on top as final
+polish rather than replacing it.
 
 When an overlay is applied, the canvas samples the local image region around the
 model, reuses the spatial relighting map when available, and stores an
@@ -909,16 +893,15 @@ shadow strength, leg shadow strength, shadow softness, perspective skew, and
 face-shading strength. Duplicated and edited overlays keep their Auto Realism
 settings but recompute the result when they are applied again.
 
-For active overlay preview, `CanvasEditor` can derive an effective Auto Realism
-result from the current transform and global lighting so the preview remains
-representative. The more position-specific local sample, spatial lighting map,
-and saved `autoRealismResult` are produced when the overlay is applied.
+For active overlay preview, `CanvasEditor` does not run heavy Auto Realism
+processing continuously while the user drags the overlay. The active workspace
+preview focuses on placement plus Ambient Light Adjustment. Auto Realism is
+derived when an overlay is applied, for placed overlay preview/export, and when
+generating output with an active unapplied overlay.
 
-Placement type changes the defaults. Cabinets start as `Floor-standing`, with
-stronger base and foot shadows plus box-model face shading. Windows start as
-`Wall-mounted`, with weak or disabled floor grounding while preserving glass
-view modes. `Tabletop / Surface-mounted` uses moderate contact shadows directly
-under the product.
+Placement type changes the defaults for perspective/camera behavior and face
+shading. Cabinets start as `Floor-standing` and windows start as
+`Wall-mounted`, while preserving Glass Appearance modes.
 
 `Auto-fit to Scene` applies a safe heuristic perspective adjustment. It uses the
 overlay position in the photo to add small skew and vertical tilt values, enough
@@ -926,9 +909,9 @@ to avoid a perfectly flat front-facing look without attempting true floor-plane
 detection or camera calibration.
 
 Advanced tuning controls still exist in collapsed sections for debugging or
-developer adjustment. They include the older perspective, grounding, ambient,
-spatial relighting, and shadow sliders, but normal users do not need to open
-them.
+developer adjustment. They include perspective, grounding, camera matching,
+ambient subfeature, spatial relighting, and shadow sliders, but normal users do
+not need to open them.
 
 This feature improves visual realism but remains a practical approximation. It
 does not perform true depth estimation, automatic floor-plane detection, camera
@@ -958,24 +941,23 @@ anchor` is enabled, align the transformed overlay bottom center to that anchor.
 The guide is editor-only and is never included in the flattened overlay or final
 PNG export.
 
-Enhanced grounding shadows complement the existing directional cast shadow and
-generic contact shadow. The canvas now draws a soft base contact shadow plus
-smaller darker foot or leg ellipses before drawing the model. Cabinet overlays
-use stronger foot shadows by default, while window overlays start with weaker
-grounding so wall-mounted placements do not look like they are sitting on the
-floor.
+Enhanced grounding shadows are now an advanced-only manual path for
+non-window overlays when Auto Realism is off. The canvas can draw a soft base
+contact shadow plus smaller darker foot or leg ellipses before drawing the
+model.
 
-Camera matching runs on the prepared model canvas after global ambient matching,
-position-based matching, and spatial ambient relighting. It applies subtle
+Camera matching runs on the prepared model canvas after Ambient Light
+Adjustment has prepared the workspace lighting match. It applies subtle
 softness, deterministic grain, compression-style smoothing, and alpha edge
 feathering while preserving transparency. This helps the rendered model avoid
 the too-clean digital edge that can stand out against phone photos.
 
 Placed overlays remain cached layer records rather than live WebGL renderers.
-Duplicating an overlay copies the grounding realism settings into an independent
-duplicate, and editing a placed overlay restores those settings into the active
-overlay. Object-aware cutouts still draw above the transformed model, and window
-glass modes continue to run before camera matching and edge blending.
+Duplicating an overlay copies the grounding realism settings into an
+independent duplicate, and editing a placed overlay restores those settings
+into the active overlay. Object-aware cutouts still draw above the transformed
+model, and Glass Appearance presets continue to run before camera matching and
+edge blending.
 
 This feature is intentionally manual and MVP-friendly. It is not automatic
 floor-plane detection, depth estimation, true perspective warp, physical
@@ -985,11 +967,23 @@ allows the overlay to be applied.
 
 ### Shadow System
 
-The canvas draws two shadow layers before drawing the model itself.
+The current canvas shadow behavior is intentionally constrained:
 
-The directional cast shadow is generated from the rendered model alpha. The app turns the 3D render into a dark silhouette, blurs it, flattens it vertically, skews it slightly, and offsets it away from the estimated light direction. This approximates a model shadow on the uploaded photo without needing true 3D floor geometry.
+1. `window` overlays skip floor-shadow rendering entirely. No directional cast,
+contact, or grounding floor-shadow pass is drawn for windows.
+2. When `Auto Realism` is enabled, the compositor does not run ground-shadow
+passes.
+3. For non-window overlays with Auto Realism off, directional cast and contact
+shadow behavior remains available through the shadow controls.
+4. Advanced grounding/foot shadows are a manual non-window path and are only
+relevant when Auto Realism is off.
 
-The contact shadow is a soft radial ellipse under the model. It anchors the model to the apparent floor or surface and becomes slightly stronger when the model is placed lower in the uploaded image.
+For the non-window path, directional cast shadow is generated from the rendered
+model alpha. The app turns the 3D render into a dark silhouette, blurs it,
+flattens it vertically, skews it slightly, and offsets it away from the
+estimated light direction. Contact shadow is a soft radial ellipse under the
+model and becomes slightly stronger when the model is placed lower in the
+uploaded image.
 
 Shadow defaults are derived from:
 
@@ -1024,12 +1018,12 @@ The exported image includes:
 
 - original uploaded photo
 - all visible placed overlays in layer order
-- each overlay's directional cast shadow
-- each overlay's contact shadow
-- each overlay's enhanced grounding shadows when enabled by Auto Realism or advanced controls
+- directional cast and contact shadows for non-window overlays when those passes are enabled
+- no floor-shadow rendering for window overlays
 - each overlay's ambience-matched 3D model render
-- each overlay's position-based ambient adjustment and spatial relighting, when available
-- each overlay's Auto Realism camera match, edge blend, face shading, and perspective transform, when enabled
+- each overlay's Ambient Light Adjustment result, including local position matching and spatial relighting when enabled
+- each overlay's Glass Appearance preset for window overlays
+- each overlay's Auto Realism camera match, edge blend, face shading, and perspective transform, when enabled and not already baked
 - each overlay's enabled object cutouts
 - the active overlay if one is being edited
 
@@ -1339,8 +1333,8 @@ For the best demo results:
 4. Click **Apply Overlay** before adding a second product.
 5. Toggle objects that should visually block each product.
 6. Use yaw/pitch to make the 3D model face the same direction as the room perspective.
-7. For window overlays, choose Frosted, Outdoor, or Solid glass mode when the uploaded room photo should not show through the pane.
-8. Keep Auto Realism, ambient matching, position-based matching, and spatial relighting ON for the most realistic output.
+7. For window overlays, choose Frosted Glass, Opaque Glass, Reflective Glass, or Outdoor View when the uploaded room photo should not show through the pane.
+8. Keep Ambient Light Adjustment and Auto Realism ON for the most realistic output.
 
 ## 20. MVP Status Summary
 
@@ -1358,7 +1352,7 @@ Completed:
 - 3D model rendering with Three.js
 - `.blend` to `.glb` export script
 - procedural window fallback
-- window glass view modes
+- Glass Appearance presets
 - window glass mesh detection and material replacement
 - procedural window glass fill fallback
 - procedural outdoor view texture fallback
@@ -1373,18 +1367,19 @@ Completed:
 - edit placed overlay workflow
 - duplicate active and placed overlays
 - hide/show, delete, and reorder placed overlays
-- ambience-based relighting
+- Ambient Light Adjustment
 - ambience-based model color matching
-- position-based ambient matching
-- spatial ambient relighting
+- position-based ambient matching and spatial relighting as internal Ambient Light Adjustment subfeatures
 - Auto Realism Engine
 - Auto-fit to Scene
 - placement type defaults for floor-standing, wall-mounted, and tabletop overlays
 - advanced perspective and grounding controls
-- enhanced grounding/foot shadows
+- advanced manual enhanced grounding/foot shadows for non-window overlays when Auto Realism is off
 - camera match, edge feathering, grain, and face-shading passes
-- automatic directional cast shadow
-- automatic contact shadow
+- automatic directional cast shadow for non-window overlays
+- automatic contact shadow for non-window overlays when Auto Realism is off
+- no floor-shadow rendering for window overlays
+- no Auto Realism ground-shadow pass
 - manual shadow controls
 - per-overlay object-aware occlusion
 - final PNG export with all visible overlays

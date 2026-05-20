@@ -23,13 +23,19 @@ import {
   DEFAULT_GROUNDING_REALISM,
   deriveAutoRealismSettings,
   deriveLocalAmbientAdjustments,
+  getSpatialRelightSettingsForAmbient,
   getAmbientCanvasFilter,
   loadCanvasImage,
+  normalizeAmbientLightAdjustmentSettings,
 } from "@/lib/canvasUtils";
 import { ProductModelRenderer } from "@/lib/modelRenderer";
-import { getProductModelOption } from "@/lib/productModels";
+import {
+  getProductModelOption,
+  normalizeWindowGlassSettings,
+} from "@/lib/productModels";
 import type {
   ActiveOverlayState,
+  AmbientLightAdjustmentSettings,
   AutoRealismResult,
   AutoRealismSettings,
   BrightnessCategory,
@@ -81,6 +87,11 @@ interface CachedOverlayImage {
   src: string;
 }
 
+interface ActivePreviewAmbientState {
+  localAmbient?: LocalAmbientState;
+  spatialRelightResult?: SpatialRelightResult;
+}
+
 type OverlaySource = HTMLCanvasElement | HTMLImageElement;
 
 interface SourceBounds {
@@ -118,6 +129,8 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     const overlayImagesRef = useRef(new Map<string, CachedOverlayImage>());
     const [canvasSize, setCanvasSize] = useState<CanvasSize | null>(null);
     const [dragState, setDragState] = useState<DragState | null>(null);
+    const [activePreviewAmbient, setActivePreviewAmbient] =
+      useState<ActivePreviewAmbientState | null>(null);
     const [maskVersion, setMaskVersion] = useState(0);
     const [modelVersion, setModelVersion] = useState(0);
     const [overlayImageVersion, setOverlayImageVersion] = useState(0);
@@ -155,7 +168,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     );
 
     const drawCanvas = useCallback(
-      (includeGuide: boolean) => {
+      (includeGuide: boolean, renderMode: "preview" | "output" = "preview") => {
         const canvas = canvasRef.current;
         const context = canvas?.getContext("2d");
 
@@ -186,19 +199,25 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
           if (!cachedOverlay) {
             continue;
           }
+          const ambientAdjustment =
+            normalizeAmbientLightAdjustmentSettings(overlay);
+          const spatialRelight = getSpatialRelightSettingsForAmbient(overlay);
+          const shouldApplyStoredAutoRealism = !overlay.autoRealismBaked;
 
           drawOverlayLayer(
             context,
             cachedOverlay.image,
             overlay.transform,
             overlay.shadowSettings,
-            overlay.ambientEnabled,
+            ambientAdjustment,
             overlay.occlusionObjectIds,
             overlay.modelType,
             overlay.groundingRealism,
-            overlay.autoRealism,
-            overlay.autoRealismResult,
-            overlay.windowGlass,
+            shouldApplyStoredAutoRealism ? overlay.autoRealism : undefined,
+            shouldApplyStoredAutoRealism ? overlay.autoRealismResult : undefined,
+            overlay.windowGlass
+              ? normalizeWindowGlassSettings(overlay.windowGlass)
+              : undefined,
             background,
             objects,
             maskImagesRef.current,
@@ -207,7 +226,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             brightnessCategory,
             lighting,
             overlay.localAmbient,
-            overlay.spatialRelight,
+            spatialRelight,
             overlay.spatialRelightResult,
             false,
           );
@@ -215,27 +234,56 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
 
         let activeReady = true;
         if (activeOverlay) {
+          const ambientAdjustment =
+            normalizeAmbientLightAdjustmentSettings(activeOverlay);
+          const windowGlass = activeOverlay.windowGlass
+            ? normalizeWindowGlassSettings(activeOverlay.windowGlass)
+            : undefined;
+          const rendererLighting =
+            ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch
+              ? lighting
+              : undefined;
           const modelCanvas = modelRendererRef.current?.render(
             activeOverlay.transform,
-            activeOverlay.ambientEnabled ? lighting : undefined,
-            activeOverlay.windowGlass,
+            rendererLighting,
+            windowGlass,
           );
 
           if (!modelCanvas) {
             activeReady = false;
           } else {
+            const activeLocalAmbient =
+              renderMode === "output"
+                ? getPositionBasedAmbientState(
+                    background,
+                    modelCanvas,
+                    activeOverlay,
+                    lighting,
+                    onWarning,
+                  )
+                : activePreviewAmbient?.localAmbient;
+            const activeSpatialRelightResult =
+              renderMode === "output"
+                ? getSpatialRelightResult(
+                    background,
+                    modelCanvas,
+                    activeOverlay,
+                    lighting,
+                    onWarning,
+                  )
+                : activePreviewAmbient?.spatialRelightResult;
             drawOverlayLayer(
               context,
               modelCanvas,
               activeOverlay.transform,
               activeOverlay.shadowSettings,
-              activeOverlay.ambientEnabled,
+              ambientAdjustment,
               activeOverlay.occlusionObjectIds,
               activeOverlay.modelType,
               activeOverlay.groundingRealism,
-              activeOverlay.autoRealism,
+              renderMode === "output" ? activeOverlay.autoRealism : undefined,
               undefined,
-              activeOverlay.windowGlass,
+              windowGlass,
               background,
               objects,
               maskImagesRef.current,
@@ -243,9 +291,9 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
               canvas.height,
               brightnessCategory,
               lighting,
-              undefined,
-              activeOverlay.spatialRelight,
-              undefined,
+              activeLocalAmbient,
+              getSpatialRelightSettingsForAmbient(activeOverlay),
+              activeSpatialRelightResult,
               includeGuide,
             );
           }
@@ -255,10 +303,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       },
       [
         activeOverlay,
+        activePreviewAmbient,
         brightnessCategory,
         editingOverlayId,
         lighting,
         objects,
+        onWarning,
         placedOverlays,
       ],
     );
@@ -267,7 +317,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       ref,
       () => ({
         async exportImage() {
-          const didDraw = drawCanvas(false);
+          const didDraw = drawCanvas(false, "output");
           const canvas = canvasRef.current;
 
           if (!didDraw || !canvas) {
@@ -288,10 +338,19 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             throw new Error("Background image is still loading.");
           }
 
+          const ambientAdjustment =
+            normalizeAmbientLightAdjustmentSettings(activeOverlay);
+          const windowGlass = activeOverlay.windowGlass
+            ? normalizeWindowGlassSettings(activeOverlay.windowGlass)
+            : undefined;
+          const rendererLighting =
+            ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch
+              ? lighting
+              : undefined;
           const modelCanvas = modelRendererRef.current?.render(
             activeOverlay.transform,
-            activeOverlay.ambientEnabled ? lighting : undefined,
-            activeOverlay.windowGlass,
+            rendererLighting,
+            windowGlass,
           );
 
           if (!modelCanvas) {
@@ -327,6 +386,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             localAmbient,
             spatialRelightResult,
             autoRealismResult,
+            autoRealismBaked: false,
           };
         },
       }),
@@ -526,10 +586,73 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     }, [objects, onWarning, requiredMaskIds, requiredMaskSignature]);
 
     useEffect(() => {
+      setActivePreviewAmbient(null);
+
+      if (!activeOverlay || !backgroundRef.current || !modelRendererRef.current) {
+        return;
+      }
+
+      const ambientAdjustment =
+        normalizeAmbientLightAdjustmentSettings(activeOverlay);
+      if (!ambientAdjustment.enabled) {
+        return;
+      }
+
+      let cancelled = false;
+      const timeout = window.setTimeout(() => {
+        const background = backgroundRef.current;
+        const modelRenderer = modelRendererRef.current;
+        if (!background || !modelRenderer || cancelled) {
+          return;
+        }
+
+        const modelCanvas = modelRenderer.render(
+          activeOverlay.transform,
+          ambientAdjustment.useGlobalMatch ? lighting : undefined,
+          activeOverlay.windowGlass
+            ? normalizeWindowGlassSettings(activeOverlay.windowGlass)
+            : undefined,
+        );
+
+        if (!modelCanvas || cancelled) {
+          return;
+        }
+
+        const localAmbient = getPositionBasedAmbientState(
+          background,
+          modelCanvas,
+          activeOverlay,
+          lighting,
+          () => undefined,
+        );
+        const spatialRelightResult = getSpatialRelightResult(
+          background,
+          modelCanvas,
+          activeOverlay,
+          lighting,
+          () => undefined,
+        );
+
+        if (!cancelled) {
+          setActivePreviewAmbient({
+            localAmbient,
+            spatialRelightResult,
+          });
+        }
+      }, dragState ? 480 : 360);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timeout);
+      };
+    }, [activeOverlay, dragState, lighting, modelVersion]);
+
+    useEffect(() => {
       drawCanvas(true);
     }, [
       canvasSize,
       drawCanvas,
+      activePreviewAmbient,
       maskVersion,
       modelVersion,
       overlayImageVersion,
@@ -541,10 +664,16 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       }
 
       const point = getCanvasPoint(event);
+      const ambientAdjustment =
+        normalizeAmbientLightAdjustmentSettings(activeOverlay);
       const modelCanvas = modelRendererRef.current.render(
         activeOverlay.transform,
-        activeOverlay.ambientEnabled ? lighting : undefined,
-        activeOverlay.windowGlass,
+        ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch
+          ? lighting
+          : undefined,
+        activeOverlay.windowGlass
+          ? normalizeWindowGlassSettings(activeOverlay.windowGlass)
+          : undefined,
       );
       const metrics = modelCanvas
         ? getOverlayMetrics(
@@ -647,7 +776,7 @@ function drawOverlayLayer(
   modelSource: OverlaySource,
   transform: OverlayTransform,
   shadowSettings: ShadowSettings,
-  ambientEnabled: boolean,
+  ambientAdjustment: AmbientLightAdjustmentSettings,
   occlusionObjectIds: string[],
   modelType: PlacedOverlay["modelType"],
   groundingRealism: GroundingRealismSettings | undefined,
@@ -696,10 +825,24 @@ function drawOverlayLayer(
     canvasWidth,
     canvasHeight,
   );
-  const localAdjustments = ambientEnabled && localAmbient?.enabled
+  const localAdjustments =
+    ambientAdjustment.enabled &&
+    ambientAdjustment.usePositionMatch &&
+    localAmbient?.enabled
     ? localAmbient.adjustments
     : undefined;
   const autoRealismEnabled = Boolean(autoRealism?.enabled);
+  const globalLighting =
+    ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch
+      ? lighting
+      : undefined;
+  const effectiveSpatialRelight =
+    ambientAdjustment.enabled && ambientAdjustment.useSpatialRelight
+      ? spatialRelight
+      : undefined;
+  const effectiveSpatialRelightResult = effectiveSpatialRelight
+    ? spatialRelightResult
+    : undefined;
 
   drawSceneShadows(
     context,
@@ -721,12 +864,16 @@ function drawOverlayLayer(
     metrics,
     autoRealismEnabled
       ? "none"
-      : getAmbientCanvasFilter(brightnessCategory, lighting, ambientEnabled),
-    ambientEnabled ? lighting : undefined,
+      : getAmbientCanvasFilter(
+          brightnessCategory,
+          lighting,
+          ambientAdjustment.enabled && ambientAdjustment.useGlobalMatch,
+        ),
+    globalLighting,
     getAmbientMatchStrength(windowGlass),
     localAdjustments,
-    ambientEnabled ? spatialRelight : undefined,
-    spatialRelightResult,
+    effectiveSpatialRelight,
+    effectiveSpatialRelightResult,
     modelType,
     windowGlass,
     effectiveGroundingRealism,
@@ -921,6 +1068,12 @@ function drawSceneShadows(
     return;
   }
 
+  // Window overlays are treated as wall-mounted surfaces in this MVP,
+  // so we suppress floor/ground shadows entirely.
+  if (modelType === "window") {
+    return;
+  }
+
   if (shadowSettings.castEnabled) {
     drawCastShadow(
       context,
@@ -932,7 +1085,11 @@ function drawSceneShadows(
     );
   }
 
-  if (!autoRealismEnabled) {
+  const enhancedGroundingEnabled = Boolean(
+    groundingRealism?.groundingShadow.enabled,
+  );
+
+  if (enhancedGroundingEnabled) {
     drawGroundingContactShadows(
       context,
       transform,
@@ -943,6 +1100,7 @@ function drawSceneShadows(
     );
   }
 
+  // Auto Realism should not add a ground shadow pass.
   if (shadowSettings.contactEnabled && !autoRealismEnabled) {
     drawContactShadow(
       context,
@@ -1150,10 +1308,10 @@ function getSpatialRelightResult(
   globalLighting: LightingAnalysis | undefined,
   onWarning: (message: string) => void,
 ): SpatialRelightResult | undefined {
-  const settings = activeOverlay.spatialRelight;
+  const settings = getSpatialRelightSettingsForAmbient(activeOverlay);
   if (
-    !settings?.enabled ||
-    !activeOverlay.ambientEnabled
+    !settings.enabled ||
+    !normalizeAmbientLightAdjustmentSettings(activeOverlay).enabled
   ) {
     return undefined;
   }
@@ -1255,9 +1413,10 @@ function getPositionBasedAmbientState(
   globalLighting: LightingAnalysis | undefined,
   onWarning: (message: string) => void,
 ): LocalAmbientState {
+  const ambientAdjustment =
+    normalizeAmbientLightAdjustmentSettings(activeOverlay);
   const enabled =
-    activeOverlay.positionBasedAmbientEnabled !== false &&
-    activeOverlay.ambientEnabled;
+    ambientAdjustment.enabled && ambientAdjustment.usePositionMatch;
 
   if (!enabled) {
     return { enabled: false };

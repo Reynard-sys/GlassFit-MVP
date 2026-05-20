@@ -1,4 +1,5 @@
 import type {
+  AmbientLightAdjustmentSettings,
   AutoRealismResult,
   AutoRealismSettings,
   BrightnessAnalysis,
@@ -59,10 +60,18 @@ export const DEFAULT_SHADOW_SETTINGS: ShadowSettings = {
 
 export const DEFAULT_SPATIAL_RELIGHT_SETTINGS: SpatialRelightSettings = {
   enabled: true,
-  intensity: 0.3,
+  intensity: 0.35,
   colorInfluence: 0.08,
   directionalInfluence: 0.2,
   gridSize: 5,
+};
+
+export const DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS: AmbientLightAdjustmentSettings = {
+  enabled: true,
+  useGlobalMatch: true,
+  usePositionMatch: true,
+  useSpatialRelight: true,
+  spatialRelightStrength: 0.35,
 };
 
 export const DEFAULT_GROUNDING_REALISM: GroundingRealismSettings = {
@@ -121,6 +130,68 @@ export function getDefaultAutoRealismSettings(
   }
 
   return { ...DEFAULT_AUTO_REALISM_SETTINGS };
+}
+
+export function normalizeAmbientLightAdjustmentSettings(
+  source?: {
+    ambientAdjustment?: AmbientLightAdjustmentSettings;
+    ambientEnabled?: boolean;
+    positionBasedAmbientEnabled?: boolean;
+    spatialRelight?: SpatialRelightSettings;
+  } | null,
+): AmbientLightAdjustmentSettings {
+  const explicit = source?.ambientAdjustment;
+  const legacySpatial = source?.spatialRelight;
+
+  if (explicit) {
+    return {
+      ...DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS,
+      ...explicit,
+      spatialRelightStrength: clamp(
+        explicit.spatialRelightStrength ??
+          legacySpatial?.intensity ??
+          DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS.spatialRelightStrength,
+        0,
+        1,
+      ),
+    };
+  }
+
+  return {
+    ...DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS,
+    enabled: source?.ambientEnabled ?? DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS.enabled,
+    usePositionMatch:
+      source?.positionBasedAmbientEnabled ??
+      DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS.usePositionMatch,
+    useSpatialRelight:
+      legacySpatial?.enabled ??
+      DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS.useSpatialRelight,
+    spatialRelightStrength: clamp(
+      legacySpatial?.intensity ??
+        DEFAULT_AMBIENT_LIGHT_ADJUSTMENT_SETTINGS.spatialRelightStrength,
+      0,
+      1,
+    ),
+  };
+}
+
+export function getSpatialRelightSettingsForAmbient(
+  source?: {
+    ambientAdjustment?: AmbientLightAdjustmentSettings;
+    ambientEnabled?: boolean;
+    positionBasedAmbientEnabled?: boolean;
+    spatialRelight?: SpatialRelightSettings;
+  } | null,
+): SpatialRelightSettings {
+  const ambientAdjustment = normalizeAmbientLightAdjustmentSettings(source);
+  const legacySpatial = source?.spatialRelight ?? DEFAULT_SPATIAL_RELIGHT_SETTINGS;
+
+  return {
+    ...DEFAULT_SPATIAL_RELIGHT_SETTINGS,
+    ...legacySpatial,
+    enabled: ambientAdjustment.enabled && ambientAdjustment.useSpatialRelight,
+    intensity: ambientAdjustment.spatialRelightStrength,
+  };
 }
 
 export function getAmbientCanvasFilter(
@@ -628,10 +699,10 @@ export function applySpatialRelightingToOverlayCanvas(
   const data = imageData.data;
   const outdoorWindow =
     modelType === "window" && windowGlass?.mode === "outdoor";
-  const transparentWindow =
-    modelType === "window" && windowGlass?.mode === "transparent";
-  const brightnessMin = outdoorWindow ? 0.92 : transparentWindow ? 0.9 : 0.88;
-  const brightnessMax = outdoorWindow ? 1.14 : transparentWindow ? 1.17 : 1.22;
+  const clearWindow =
+    modelType === "window" && windowGlass?.mode === "clear";
+  const brightnessMin = outdoorWindow ? 0.92 : clearWindow ? 0.9 : 0.88;
+  const brightnessMax = outdoorWindow ? 1.14 : clearWindow ? 1.17 : 1.22;
   const colorInfluence = outdoorWindow
     ? settings.colorInfluence * 0.4
     : settings.colorInfluence * 0.75;
@@ -814,20 +885,25 @@ export function applyCabinetMaterialVitality(
       }
 
       const normalizedX = outputCanvas.width <= 1 ? 0.5 : x / (outputCanvas.width - 1);
-      const topHighlight = normalizedY < 0.34 ? (0.34 - normalizedY) / 0.34 : 0;
-      const frontLift = normalizedY > 0.28 && normalizedY < 0.74 ? 1 : 0;
+      const topHighlight = 1 - smoothstep(0.05, 0.38, normalizedY);
+      const frontLift =
+        smoothstep(0.18, 0.38, normalizedY) *
+        (1 - smoothstep(0.68, 0.86, normalizedY));
       const sideRollOff = Math.abs(normalizedX - 0.5) * 2;
       const rightFaceShade = normalizedX > 0.62 ? (normalizedX - 0.62) / 0.38 : 0;
       const lowerDepth = normalizedY > 0.62 ? (normalizedY - 0.62) / 0.38 : 0;
+      const softTopShadow = smoothstep(0.18, 0.3, normalizedY) *
+        (1 - smoothstep(0.3, 0.46, normalizedY));
       const materialLift =
-        1.06 +
-        topHighlight * 0.11 +
-        frontLift * 0.035 -
+        1.075 +
+        topHighlight * 0.13 +
+        frontLift * 0.045 -
         sideRollOff * 0.035 -
-        rightFaceShade * 0.045 -
-        lowerDepth * 0.025;
-      const clarity = 1.14;
-      const saturation = 1.06;
+        rightFaceShade * 0.055 -
+        lowerDepth * 0.035 -
+        softTopShadow * 0.018;
+      const clarity = 1.19;
+      const saturation = 1.08;
 
       let nextRed = (red * materialLift - 128) * clarity + 128;
       let nextGreen = (green * materialLift - 128) * clarity + 128;
@@ -838,9 +914,9 @@ export function applyCabinetMaterialVitality(
       nextGreen = nextLuma + (nextGreen - nextLuma) * saturation;
       nextBlue = nextLuma + (nextBlue - nextLuma) * saturation;
 
-      data[index] = clampChannel(nextRed + 4);
-      data[index + 1] = clampChannel(nextGreen + 3);
-      data[index + 2] = clampChannel(nextBlue + 1);
+      data[index] = clampChannel(nextRed + 5);
+      data[index + 1] = clampChannel(nextGreen + 4);
+      data[index + 2] = clampChannel(nextBlue + 2);
     }
   }
 
@@ -1186,6 +1262,11 @@ function normalizeLightDirection(direction?: { x: number; y: number }) {
 
 function lerp(first: number, second: number, amount: number) {
   return first + (second - first) * amount;
+}
+
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const amount = clamp((value - edge0) / (edge1 - edge0 || 1), 0, 1);
+  return amount * amount * (3 - 2 * amount);
 }
 
 function stringToSeed(value: string) {

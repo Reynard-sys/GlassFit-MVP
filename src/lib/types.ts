@@ -102,6 +102,14 @@ export interface SpatialRelightResult {
   applied: boolean;
 }
 
+export interface AmbientLightAdjustmentSettings {
+  enabled: boolean;
+  useGlobalMatch: boolean;
+  usePositionMatch: boolean;
+  useSpatialRelight: boolean;
+  spatialRelightStrength: number;
+}
+
 export interface PerspectiveSettings {
   enabled: boolean;
   skewX: number;
@@ -203,13 +211,26 @@ export interface ProductModelOption {
   fallback: "drawer" | "window";
 }
 
-export type GlassViewMode = "transparent" | "frosted" | "outdoor" | "solid";
+export type GlassAppearanceMode =
+  | "clear"
+  | "frosted"
+  | "opaque"
+  | "reflective"
+  | "outdoor";
+
+export type GlassViewMode = GlassAppearanceMode;
 
 export interface WindowGlassSettings {
-  mode: GlassViewMode;
-  opacity: number;
-  tintColor: string;
+  mode: GlassAppearanceMode;
+  opacity?: number;
   outdoorTexturePath?: string;
+  internalTintColor?: string;
+
+  /**
+   * @deprecated Kept only for older placed overlays. Normal customer UI must
+   * not display or edit arbitrary glass tint colors.
+   */
+  tintColor?: string;
 }
 
 export interface OverlayTransform {
@@ -245,6 +266,7 @@ export interface PlacedOverlay {
   shadowSettings: ShadowSettings;
   occlusionObjectIds: string[];
   ambientEnabled: boolean;
+  ambientAdjustment?: AmbientLightAdjustmentSettings;
   positionBasedAmbientEnabled?: boolean;
   localAmbient?: LocalAmbientState;
   spatialRelight?: SpatialRelightSettings;
@@ -252,6 +274,7 @@ export interface PlacedOverlay {
   groundingRealism?: GroundingRealismSettings;
   autoRealism?: AutoRealismSettings;
   autoRealismResult?: AutoRealismResult;
+  autoRealismBaked?: boolean;
   visible: boolean;
   windowGlass?: WindowGlassSettings;
   locked?: boolean;
@@ -269,6 +292,7 @@ export interface ActiveOverlayState {
   transform: OverlayTransform;
   shadowSettings: ShadowSettings;
   ambientEnabled: boolean;
+  ambientAdjustment?: AmbientLightAdjustmentSettings;
   positionBasedAmbientEnabled?: boolean;
   spatialRelight?: SpatialRelightSettings;
   groundingRealism?: GroundingRealismSettings;
@@ -283,6 +307,7 @@ export interface FlattenedOverlayResult {
   localAmbient?: LocalAmbientState;
   spatialRelightResult?: SpatialRelightResult;
   autoRealismResult?: AutoRealismResult;
+  autoRealismBaked?: boolean;
 }
 
 export interface CanvasEditorHandle {

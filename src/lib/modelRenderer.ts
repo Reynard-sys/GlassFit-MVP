@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  getDefaultWindowGlassSettings,
+  normalizeWindowGlassSettings,
+} from "./productModels";
 import type {
   LightingAnalysis,
   OverlayTransform,
@@ -13,12 +17,7 @@ export interface ModelLoadResult {
   message: string;
 }
 
-const FALLBACK_WINDOW_GLASS_SETTINGS: WindowGlassSettings = {
-  mode: "frosted",
-  opacity: 0.9,
-  tintColor: "#dbeafe",
-  outdoorTexturePath: "/textures/outdoor-view.jpg",
-};
+const FALLBACK_WINDOW_GLASS_SETTINGS = getDefaultWindowGlassSettings();
 
 const GLASS_KEYWORDS = [
   "glass",
@@ -67,6 +66,8 @@ export class ProductModelRenderer {
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(1024, 1024, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
 
     this.camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
     this.camera.position.set(3.4, 1.8, 5.6);
@@ -99,6 +100,7 @@ export class ProductModelRenderer {
       this.modelRoot = gltf.scene;
       this.modelGroup.add(this.modelRoot);
       this.normalizeModel();
+      this.enhanceLoadedModelMaterials(modelType);
       this.setupWindowGlassTargets();
 
       return {
@@ -112,6 +114,7 @@ export class ProductModelRenderer {
           : createProceduralDrawerModel();
       this.modelGroup.add(this.modelRoot);
       this.normalizeModel();
+      this.enhanceLoadedModelMaterials(modelType);
       this.setupWindowGlassTargets();
 
       const modelLabel = modelType === "window" ? "Window" : "Ikea 3-Drawer";
@@ -216,6 +219,55 @@ export class ProductModelRenderer {
     );
   }
 
+  private enhanceLoadedModelMaterials(modelType: ProductModelType) {
+    if (!this.modelRoot) {
+      return;
+    }
+
+    this.modelRoot.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) {
+        return;
+      }
+
+      child.castShadow = false;
+      child.receiveShadow = false;
+
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : [child.material];
+
+      for (const material of materials) {
+        if (!(material instanceof THREE.MeshStandardMaterial)) {
+          continue;
+        }
+
+        material.envMapIntensity = modelType === "cabinet" ? 1.22 : 1.05;
+
+        if (modelType === "cabinet") {
+          material.roughness = THREE.MathUtils.clamp(
+            material.roughness * 0.82,
+            0.28,
+            0.62,
+          );
+          material.metalness = THREE.MathUtils.clamp(
+            material.metalness * 1.05,
+            0,
+            0.78,
+          );
+          material.color.lerp(new THREE.Color(0xffffff), 0.035);
+        } else {
+          material.roughness = THREE.MathUtils.clamp(
+            material.roughness * 0.9,
+            0.18,
+            0.72,
+          );
+        }
+
+        material.needsUpdate = true;
+      }
+    });
+  }
+
   private setupWindowGlassTargets() {
     this.glassMeshes = [];
 
@@ -269,7 +321,6 @@ export class ProductModelRenderer {
     const cacheKey = [
       settings.mode,
       settings.opacity,
-      settings.tintColor,
       settings.outdoorTexturePath ?? "",
       this.getOutdoorTextureCacheState(settings.outdoorTexturePath),
       meshSignature,
@@ -293,7 +344,7 @@ export class ProductModelRenderer {
 
     this.glassMeshes.forEach((mesh, index) => {
       mesh.material = this.glassMaterials[index] ?? this.glassMaterials[0];
-      mesh.renderOrder = settings.mode === "transparent" ? 2 : 1;
+      mesh.renderOrder = settings.mode === "clear" ? 2 : 1;
     });
   }
 
@@ -628,73 +679,109 @@ function isGlassMesh(mesh: THREE.Mesh) {
   return GLASS_KEYWORDS.some((keyword) => searchableText.includes(keyword));
 }
 
-function normalizeWindowGlassSettings(
-  settings: WindowGlassSettings | undefined,
-): WindowGlassSettings {
-  return {
-    ...FALLBACK_WINDOW_GLASS_SETTINGS,
-    ...settings,
-    tintColor: settings?.tintColor || FALLBACK_WINDOW_GLASS_SETTINGS.tintColor,
-    opacity:
-      typeof settings?.opacity === "number"
-        ? THREE.MathUtils.clamp(settings.opacity, 0, 1)
-        : FALLBACK_WINDOW_GLASS_SETTINGS.opacity,
-  };
-}
-
 function createWindowGlassMaterial(
   settings: WindowGlassSettings,
   outdoorTexture: THREE.Texture,
 ) {
-  const tintColor = new THREE.Color(settings.tintColor);
+  const opacity = settings.opacity ?? FALLBACK_WINDOW_GLASS_SETTINGS.opacity ?? 0.9;
 
   switch (settings.mode) {
-    case "transparent":
+    case "clear":
       return new THREE.MeshPhysicalMaterial({
-        color: tintColor,
+        color: 0xdceff6,
         transparent: true,
-        opacity: settings.opacity,
-        roughness: 0.05,
+        opacity: THREE.MathUtils.clamp(opacity, 0.25, 0.42),
+        roughness: 0.16,
         metalness: 0,
-        transmission: 0.4,
-        thickness: 0.02,
-        clearcoat: 0.4,
-        clearcoatRoughness: 0.1,
+        transmission: 0.24,
+        thickness: 0.035,
+        clearcoat: 0.72,
+        clearcoatRoughness: 0.08,
         side: THREE.DoubleSide,
         depthWrite: false,
       });
     case "outdoor":
       return new THREE.MeshStandardMaterial({
         map: outdoorTexture,
-        transparent: settings.opacity < 1,
-        opacity: settings.opacity,
+        transparent: opacity < 1,
+        opacity,
         roughness: 0.45,
         metalness: 0,
         side: THREE.DoubleSide,
         depthWrite: true,
       });
-    case "solid":
+    case "opaque":
       return new THREE.MeshStandardMaterial({
-        color: tintColor,
-        transparent: settings.opacity < 1,
-        opacity: settings.opacity,
-        roughness: 0.65,
-        metalness: 0,
+        color: 0xe6ecef,
+        transparent: opacity < 0.98,
+        opacity,
+        roughness: 0.58,
+        metalness: 0.02,
+        side: THREE.DoubleSide,
+        depthWrite: true,
+      });
+    case "reflective":
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xb9c9d1,
+        map: createReflectiveGlassTexture(),
+        transparent: opacity < 0.98,
+        opacity: THREE.MathUtils.clamp(opacity, 0.78, 1),
+        roughness: 0.2,
+        metalness: 0.16,
+        clearcoat: 0.86,
+        clearcoatRoughness: 0.14,
         side: THREE.DoubleSide,
         depthWrite: true,
       });
     case "frosted":
     default:
-      return new THREE.MeshStandardMaterial({
-        color: tintColor,
-        transparent: settings.opacity < 1,
-        opacity: settings.opacity,
-        roughness: 0.9,
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xe9eef0,
+        transparent: opacity < 1,
+        opacity: THREE.MathUtils.clamp(opacity, 0.75, 0.92),
+        roughness: 0.88,
         metalness: 0,
+        transmission: 0.08,
+        thickness: 0.06,
+        clearcoat: 0.25,
+        clearcoatRoughness: 0.6,
         side: THREE.DoubleSide,
         depthWrite: true,
       });
   }
+}
+
+function createReflectiveGlassTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 512;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  const base = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  base.addColorStop(0, "#e8f0f4");
+  base.addColorStop(0.42, "#aebfc8");
+  base.addColorStop(1, "#70858f");
+  context.fillStyle = base;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const highlight = context.createLinearGradient(0, 0, canvas.width, 0);
+  highlight.addColorStop(0, "rgba(255,255,255,0)");
+  highlight.addColorStop(0.28, "rgba(255,255,255,0.54)");
+  highlight.addColorStop(0.42, "rgba(255,255,255,0.12)");
+  highlight.addColorStop(1, "rgba(255,255,255,0)");
+  context.translate(canvas.width * 0.18, canvas.height * 0.52);
+  context.rotate(-0.42);
+  context.fillStyle = highlight;
+  context.fillRect(-canvas.width * 0.2, -canvas.height, canvas.width * 0.42, canvas.height * 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 function createOutdoorTextureForPane(
